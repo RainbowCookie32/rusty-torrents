@@ -52,6 +52,8 @@ impl Engine {
         let pieces = Arc::new(RwLock::new(Vec::new()));
         let hashes = Arc::new(Engine::build_hashes_list(info.get("pieces").unwrap().get_string_bytes()).await);
 
+        println!("Torrent name: {}", info.get("name").unwrap().get_string());
+
         let torrent_info = Arc::new(TorrentInfo {
             data,
             piece_length,
