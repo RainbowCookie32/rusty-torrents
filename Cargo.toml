@@ -1,0 +1,9 @@
+[workspace]
+
+members = [
+    "rusty-parser",
+    "rusty-torrents"
+]
+
+[profile.release]
+debug = true

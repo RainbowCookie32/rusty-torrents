@@ -1,0 +1,10 @@
+[package]
+name = "rusty-parser"
+version = "0.1.0"
+authors = ["RainbowCookie32 <matimoran03@gmail.com>"]
+edition = "2018"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+sha1 = { version = "0.6.0", features = ["std"] }
