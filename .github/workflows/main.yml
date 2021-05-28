@@ -1,0 +1,54 @@
+name: Rust build
+
+on:
+  push:
+    branches:
+      - master
+  pull_request:
+    branches:
+      - master
+
+jobs:  
+  linux-build:
+    runs-on: [ubuntu-latest]
+    steps:
+    - uses: actions/checkout@v2
+    - uses: actions/cache@v2
+      with:
+        path: target
+        key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+    - name: Build (release)
+      run: cargo build --release
+    - name: Move binary
+      run: |
+        mkdir result
+        cp target/release/rusty-torrents result
+    - name: Move resources
+      run: cp -r res result
+    - name: Upload artifact
+      uses: actions/upload-artifact@v1.0.0
+      with:
+        name: rusty-torrents_linux
+        path: result
+        
+  windows-build:
+    runs-on: [windows-latest]
+    steps:
+    - uses: actions/checkout@v2
+    - uses: actions/cache@v2
+      with:
+        path: target
+        key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+    - name: Build (release)
+      run: cargo build --release
+    - name: Move binary
+      run: |
+        mkdir result
+        copy target/release/rusty-torrents.exe result
+    - name: Move resources
+      run: move res result
+    - name: Upload artifact
+      uses: actions/upload-artifact@v1.0.0
+      with:
+        name: rusty-torrents_windows
+        path: result 
