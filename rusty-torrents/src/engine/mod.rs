@@ -162,12 +162,20 @@ impl Engine {
         let mut handles = Vec::new();
         let missing_pieces = Arc::new(RwLock::new(Engine::get_missing_pieces(self.torrent_info.clone()).await));
 
+        let (have_tx, _) = tokio::sync::broadcast::channel(10);
+
         for peer in peers {
             let info = self.torrent_info.clone();
             let missing_pieces_p = missing_pieces.clone();
 
+            let have_tx_peer = have_tx.clone();
+            let have_rx_peer = have_tx.subscribe();
+
             let handle = tokio::task::spawn(async {
                 let mut peer = peer;
+
+                let have_tx = have_tx_peer;
+                let mut have_rx = have_rx_peer;
 
                 let info = info;
                 let rng = fastrand::Rng::new();
@@ -225,6 +233,8 @@ impl Engine {
                                     Engine::write_piece(info.clone(), &data, &mut file_idx, &mut file_position).await;
     
                                     println!("Finished piece {}.", piece_index);
+
+                                    have_tx.send(piece_index).unwrap();
                                     pieces[piece_index].set_finished(true);
     
                                     if !missing_pieces.read().await.is_empty() {
@@ -239,6 +249,12 @@ impl Engine {
                             }
                             MessageKind::Cancel { .. } => {}
                             _ => {}
+                        }
+                    }
+
+                    if let Ok(piece_index) = have_rx.try_recv() {
+                        if !peer.peer_choking_client() {
+                            peer.send_message(MessageKind::Have { piece_index }).await;
                         }
                     }
     
