@@ -45,6 +45,7 @@ impl Piece {
 
     pub fn add_received_bytes(&mut self, len: usize) {
         self.last_received_byte += len;
+        self.finished = self.last_received_byte >= self.piece_len;
     }
 
     pub fn piece_len(&self) -> usize {
