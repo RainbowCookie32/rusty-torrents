@@ -91,7 +91,6 @@ impl Engine {
 
     pub async fn start_torrent(mut self) {
         let mut peers: Vec<Box<dyn Peer + Send>> = Vec::new();
-        let mut tasks = Vec::new();
 
         for tracker in self.trackers.iter_mut() {
             tracker.send_message(TrackerEvent::Started).await;
@@ -108,17 +107,15 @@ impl Engine {
         }
 
         for peer in peers {
-            let handle = tokio::task::spawn(async move {
+            tokio::task::spawn(async move {
                 let mut peer = peer;
 
                 peer.handle_events().await;
             });
-
-            tasks.push(handle);
         }
 
-        for handle in tasks {
-            handle.await.unwrap();
+        loop {
+            std::thread::sleep(std::time::Duration::from_secs(1));
         }
     }
 

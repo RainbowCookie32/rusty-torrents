@@ -22,7 +22,8 @@ fn main() {
     let torrent_path = matches.value_of("path").expect("No value for torrent provided");
     let torrent_data = std::fs::read(torrent_path).expect("Couldn't open torrent file");
 
-    let rt = tokio::runtime::Builder::new_current_thread()
+    let rt = tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(1)
         .enable_io()
         .enable_time()
         .build()

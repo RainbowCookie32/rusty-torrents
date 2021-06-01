@@ -6,7 +6,6 @@ use async_trait::async_trait;
 use rusty_parser::BEncodeType;
 
 use crate::types::*;
-use crate::engine::peer::tcp::TcpPeer;
 use crate::engine::tracker::{Tracker, TrackerEvent};
 
 pub struct TcpTracker {
