@@ -280,14 +280,14 @@ impl Peer for TcpPeer {
                             }
                         }
                         Message::Piece(data) => {
-                            let piece_len = data.len();
-                            let mut data = data.as_slice();
+                            let mut data_slice = data.as_slice();
 
-                            let piece_idx = data.get_u32();
-                            let _block_offset = data.get_u32();
+                            let piece_idx = data_slice.get_u32();
+                            let _block_offset = data_slice.get_u32();
 
                             if let Some(requested) = self.requested.as_ref() {
                                 if *requested != piece_idx as usize {
+                                    println!("Received data for piece {}, but requested piece {}.", piece_idx, requested);
                                     continue;
                                 }
                             }
@@ -295,22 +295,28 @@ impl Peer for TcpPeer {
                                 continue;
                             }
 
-                            self.piece_data.append(&mut data.to_vec());
+                            let received_bytes = data_slice.len();
+                            let mut piece_data = data_slice.to_vec();
+                            self.piece_data.append(&mut piece_data);
 
                             if let Some(piece) = self.torrent_info.torrent_pieces.write().await.get_mut(piece_idx as usize) {
-                                piece.add_received_bytes(piece_len);
+                                piece.add_received_bytes(received_bytes);
 
-                                if piece.piece_len() == self.piece_data.len() {
+                                if self.piece_data.len() >= piece.piece_len() {
                                     let (mut start_file, mut start_position) = piece.get_offsets();
-
-                                    utils::write_piece(self.torrent_info.clone(), &self.piece_data, &mut start_file, &mut &mut start_position).await;
 
                                     if utils::check_piece(self.torrent_info.clone(), piece_idx as usize, &self.piece_data).await {
                                         piece.set_finished(true);
 
-                                        self.requested = None;
-                                        self.piece_data = Vec::with_capacity(self.torrent_info.piece_length);
+                                        utils::write_piece(self.torrent_info.clone(), &self.piece_data, &mut start_file, &mut start_position).await;
+                                        println!("Piece {} finished.", piece_idx);
                                     }
+                                    else {
+                                        println!("Piece {} finished, but hash didn't match.", piece_idx);
+                                    }
+
+                                    self.requested = None;
+                                    self.piece_data = Vec::with_capacity(self.torrent_info.piece_length);
                                 }
                             }
 
