@@ -22,6 +22,7 @@ jobs:
     - name: Move binary
       run: |
         mkdir result
+        strip target/release/rusty-torrents
         cp target/release/rusty-torrents result
     - name: Upload artifact
       uses: actions/upload-artifact@v1.0.0
