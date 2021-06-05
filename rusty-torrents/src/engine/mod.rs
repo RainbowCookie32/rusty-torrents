@@ -7,7 +7,7 @@ pub mod utils;
 use std::sync::Arc;
 
 use tokio::sync::RwLock;
-use rusty_parser::Torrent;
+use rusty_parser::ParsedTorrent;
 
 use file::File;
 use peer::{Bitfield, Peer};
@@ -16,7 +16,7 @@ use tracker::{Tracker, TrackerEvent};
 use crate::types::*;
 
 pub struct TorrentInfo {
-    data: Torrent,
+    data: ParsedTorrent,
     piece_length: usize,
 
     torrent_files: TFiles,
@@ -35,7 +35,7 @@ pub struct Engine {
 
 impl Engine {
     pub async fn init(data: Vec<u8>) -> Engine {
-        let data = Torrent::new(data).unwrap();
+        let data = ParsedTorrent::new(data).unwrap();
         let (info, _) = data.info();
         let piece_length = info.get("piece length").unwrap().get_int() as usize;
 

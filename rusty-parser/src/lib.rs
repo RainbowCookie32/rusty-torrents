@@ -225,7 +225,7 @@ impl BEncodeType {
     }
 }
 
-pub struct Torrent {
+pub struct ParsedTorrent {
     announce: BEncodeType,
     announce_list: BEncodeType,
     creation_date: BEncodeType,
@@ -233,8 +233,8 @@ pub struct Torrent {
     info: BEncodeType
 }
 
-impl Torrent {
-    pub fn new(data: Vec<u8>) -> Result<Torrent, ParseError> {
+impl ParsedTorrent {
+    pub fn new(data: Vec<u8>) -> Result<ParsedTorrent, ParseError> {
         let mut position = 0;
         let value_byte = data[position] as char;
     
@@ -282,7 +282,7 @@ impl Torrent {
                     }
                 };
             
-                Ok(Torrent {
+                Ok(ParsedTorrent {
                     announce,
                     announce_list,
                     creation_date,
@@ -361,7 +361,7 @@ mod tests {
     #[test]
     fn torrent_parsing() {
         let file_data = std::fs::read("/home/rainbowcookie/Downloads/ubuntu-21.04-desktop-amd64.iso.torrent").unwrap();
-        let result = crate::Torrent::new(file_data);
+        let result = crate::ParsedTorrent::new(file_data);
         
         assert!(result.is_ok())
     }
