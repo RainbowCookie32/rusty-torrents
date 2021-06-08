@@ -90,16 +90,10 @@ impl Engine {
     }
 
     pub async fn start_torrent(mut self) {
-        let mut peers: Vec<Box<dyn Peer + Send>> = Vec::new();
+        let mut peers: Vec<Box<dyn Peer+Send>> = Vec::new();
 
         for tracker in self.trackers.iter_mut() {
-            tracker.send_message(TrackerEvent::Started).await;
-            let tracker_peers = tracker.get_peers();
-
-            for address in tracker_peers {
-                // TODO: Figure out how to handle UDP peers.
-                peers.push(Box::new(peer::tcp::TcpPeer::new(*address, self.torrent_info.clone())));
-            }
+            peers.append(&mut tracker.get_peers());
         }
 
         if peers.is_empty() {

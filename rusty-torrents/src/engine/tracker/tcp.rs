@@ -6,6 +6,8 @@ use async_trait::async_trait;
 use rusty_parser::BEncodeType;
 
 use crate::types::*;
+use crate::engine::peer::Peer;
+use crate::engine::peer::tcp::TcpPeer;
 use crate::engine::tracker::{Tracker, TrackerEvent};
 
 pub struct TcpTracker {
@@ -42,8 +44,14 @@ impl TcpTracker {
 
 #[async_trait]
 impl Tracker for TcpTracker {
-    fn get_peers(&self) -> &Vec<SocketAddrV4> {
-        &self.peers_list
+    fn get_peers(&self) -> Vec<Box<dyn Peer+Send>> {
+        let mut peers: Vec<Box<dyn Peer+Send>> = Vec::new();
+
+        for address in self.peers_list.iter() {
+            peers.push(Box::new(TcpPeer::new(*address, self.info.clone())));
+        }
+
+        peers
     }
 
     async fn send_message(&mut self, event: TrackerEvent) {

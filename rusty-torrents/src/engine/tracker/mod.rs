@@ -1,14 +1,13 @@
 pub mod tcp;
 
-use std::net::SocketAddrV4;
-
 use async_trait::async_trait;
 
 use crate::types::*;
+use crate::engine::peer::Peer;
 
 #[async_trait]
 pub trait Tracker {
-    fn get_peers(&self) -> &Vec<SocketAddrV4>;
+    fn get_peers(&self) -> Vec<Box<dyn Peer+Send>>;
     async fn send_message(&mut self, event: TrackerEvent);
 }
 
