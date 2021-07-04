@@ -11,7 +11,7 @@ use rusty_parser::ParsedTorrent;
 
 use file::File;
 use peer::{Bitfield, Peer};
-use tracker::{Tracker, TrackerEvent};
+use tracker::{TrackerKind, TrackerEvent};
 
 use crate::types::*;
 
@@ -29,7 +29,7 @@ pub struct TorrentInfo {
 }
 
 pub struct Engine {
-    trackers: Vec<Box<dyn Tracker>>,
+    trackers: Vec<TrackerKind>,
     torrent_info: Arc<TorrentInfo>
 }
 
@@ -93,7 +93,13 @@ impl Engine {
         let mut peers: Vec<Box<dyn Peer+Send>> = Vec::new();
 
         for tracker in self.trackers.iter_mut() {
-            peers.append(&mut tracker.get_peers());
+            match tracker {
+                TrackerKind::Tcp(t) => {
+                    t.send_message(TrackerEvent::Started).await;
+                    peers.append(&mut t.get_peers());
+                },
+                TrackerKind::Udp => unimplemented!(),
+            }
         }
 
         if peers.is_empty() {

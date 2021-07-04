@@ -1,17 +1,13 @@
 pub mod tcp;
 
-use async_trait::async_trait;
-
 use crate::types::*;
-use crate::engine::peer::Peer;
+use crate::engine::tracker::tcp::TcpTracker;
 
-#[async_trait]
-pub trait Tracker {
-    fn get_peers(&self) -> Vec<Box<dyn Peer+Send>>;
-    async fn send_message(&mut self, event: TrackerEvent);
+pub enum TrackerKind {
+    Tcp(TcpTracker),
+    Udp
 }
 
-#[derive(PartialEq)]
 pub enum TrackerEvent {
     Started,
     Stopped,
@@ -20,8 +16,8 @@ pub enum TrackerEvent {
     PeriodicRequest
 }
 
-pub fn create_trackers(trackers: Vec<String>, info: TInfo) -> Vec<Box<dyn Tracker>> {
-    let mut result: Vec<Box<dyn Tracker>> = Vec::new();
+pub fn create_trackers(trackers: Vec<String>, info: TInfo) -> Vec<TrackerKind> {
+    let mut result = Vec::new();
 
     for tracker in trackers {
         if tracker.starts_with("udp:") {
@@ -30,9 +26,9 @@ pub fn create_trackers(trackers: Vec<String>, info: TInfo) -> Vec<Box<dyn Tracke
         else {
             // TODO: bruh
             let client_id: String = vec!['r'; 20].iter().collect();
-            let tracker = tcp::TcpTracker::new(client_id, tracker, info.clone());
+            let tracker = TcpTracker::new(client_id, tracker, info.clone());
 
-            result.push(Box::new(tracker));
+            result.push(TrackerKind::Tcp(tracker));
         }
     }
 

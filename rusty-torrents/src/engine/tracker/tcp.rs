@@ -2,13 +2,12 @@ use std::time::{Duration, Instant};
 use std::net::{Ipv4Addr, SocketAddrV4};
 
 use bytes::Buf;
-use async_trait::async_trait;
 use rusty_parser::BEncodeType;
 
 use crate::types::*;
 use crate::engine::peer::Peer;
 use crate::engine::peer::tcp::TcpPeer;
-use crate::engine::tracker::{Tracker, TrackerEvent};
+use crate::engine::tracker::TrackerEvent;
 
 pub struct TcpTracker {
     client_id: String,
@@ -40,11 +39,8 @@ impl TcpTracker {
             time_since_last_message: Instant::now()
         }
     }
-}
 
-#[async_trait]
-impl Tracker for TcpTracker {
-    fn get_peers(&self) -> Vec<Box<dyn Peer+Send>> {
+    pub fn get_peers(&self) -> Vec<Box<dyn Peer+Send>> {
         let mut peers: Vec<Box<dyn Peer+Send>> = Vec::new();
 
         for address in self.peers_list.iter() {
@@ -54,11 +50,13 @@ impl Tracker for TcpTracker {
         peers
     }
 
-    async fn send_message(&mut self, event: TrackerEvent) {
+    pub async fn send_message(&mut self, event: TrackerEvent) {
         let should_reannounce = self.time_since_last_message.elapsed() < self.announce_interval;
 
-        if self.announced && event == TrackerEvent::PeriodicRequest && !should_reannounce {
-            return;
+        if let TrackerEvent::PeriodicRequest = event {
+            if self.announced && !should_reannounce {
+                return;
+            }
         }
 
         println!("Attempting announce to {}", self.tracker_url);
