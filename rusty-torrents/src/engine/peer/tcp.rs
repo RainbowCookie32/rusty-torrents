@@ -1,10 +1,11 @@
 use std::net::SocketAddrV4;
 
 use bytes::Buf;
-use async_trait::async_trait;
 
-use tokio::net::TcpStream;
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use futures::io::{AsyncReadExt, AsyncWriteExt};
+
+use async_net::TcpStream;
+use async_trait::async_trait;
 
 use crate::types::*;
 use crate::engine::utils;
@@ -359,7 +360,7 @@ impl Peer for TcpPeer {
                             self.send_peer_message(Message::Interested).await;
                         }
 
-                        let wanted_piece = self.requested.clone().unwrap();
+                        let wanted_piece = self.requested.unwrap();
                         let mut message = None;
 
                         if let Some(piece) = self.torrent_info.torrent_pieces.read().await.get(wanted_piece) {
