@@ -172,31 +172,30 @@ impl Peer for TcpPeer {
         if self.stream.is_none() {
             let handshake = self.get_handshake();
 
-            for _ in 0..3 {
-                if let Ok(mut stream) = TcpStream::connect(&self.address).await {
-                    if stream.write_all(&handshake).await.is_ok() {
-                        let mut message = Vec::new();
-                        let mut bitfield = self.torrent_info.bitfield_client.read().await.as_bytes();
+            if let Ok(mut stream) = TcpStream::connect(&self.address).await {
+                if stream.write_all(&handshake).await.is_ok() {
+                    let mut message = Vec::new();
+                    let mut bitfield = self.torrent_info.bitfield_client.read().await.as_bytes();
 
-                        let message_length = bitfield.len() as u32 + 1;
+                    let message_length = bitfield.len() as u32 + 1;
 
-                        message.append(&mut message_length.to_be_bytes().to_vec());
-                        message.push(5);
-                        message.append(&mut bitfield);
+                    message.append(&mut message_length.to_be_bytes().to_vec());
+                    message.push(5);
+                    message.append(&mut bitfield);
 
-                        if let Err(e) = stream.write_all(&message).await {
-                            println!("Error sending bitfield: {}", e.to_string());
-                        }
-
-                        self.stream = Some(stream);
-                        println!("Connection established with peer {}", self.address);
-                        break;
+                    if let Err(e) = stream.write_all(&message).await {
+                        println!("Error sending bitfield: {}", e.to_string());
+                        return;
                     }
+
+                    self.stream = Some(stream);
+                    println!("Connection established with peer {}", self.address);
+                }
+                else {
+                    return;
                 }
             }
-
-            // Abort if we still couldn't connect to the peer.
-            if self.stream.is_none() {
+            else {
                 return;
             }
         }
