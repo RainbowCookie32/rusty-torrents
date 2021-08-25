@@ -2,7 +2,6 @@ use tokio::fs;
 use tokio::fs::OpenOptions;
 use tokio::io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt, SeekFrom};
 
-
 pub struct File {
     file: fs::File,
     piece_len: usize

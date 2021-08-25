@@ -1,3 +1,4 @@
+use std::sync::Arc;
 use std::net::SocketAddrV4;
 
 use bytes::Buf;
@@ -7,8 +8,8 @@ use futures::io::{AsyncReadExt, AsyncWriteExt};
 use async_net::TcpStream;
 use async_trait::async_trait;
 
-use crate::types::*;
 use crate::engine::utils;
+use crate::engine::TorrentInfo;
 use crate::engine::peer::{Bitfield, Peer, PeerStatus, Message};
 
 pub struct TcpPeer {
@@ -16,7 +17,7 @@ pub struct TcpPeer {
     stream: Option<TcpStream>,
 
     status: PeerStatus,
-    torrent_info: TInfo,
+    torrent_info: Arc<TorrentInfo>,
 
     bitfield_peer: Bitfield,
     
@@ -28,7 +29,7 @@ pub struct TcpPeer {
 }
 
 impl TcpPeer {
-    pub fn new(address: SocketAddrV4, torrent_info: TInfo) -> TcpPeer {
+    pub fn new(address: SocketAddrV4, torrent_info: Arc<TorrentInfo>) -> TcpPeer {
         let pieces = torrent_info.pieces_hashes.len();
         let piece_length = torrent_info.piece_length;
 

@@ -1,11 +1,13 @@
+use std::sync::Arc;
+
 use sha1::Sha1;
 
 use tokio::io::{AsyncSeekExt, AsyncWriteExt, SeekFrom};
 
-use crate::types::*;
+use crate::engine::TorrentInfo;
 use crate::engine::piece::Piece;
 
-pub async fn check_piece(info: TInfo, idx: usize, data: &[u8]) -> bool {
+pub async fn check_piece(info: Arc<TorrentInfo>, idx: usize, data: &[u8]) -> bool {
     let hash = Sha1::from(data).digest().bytes();
 
     if hash == info.pieces_hashes[idx].as_slice() {
@@ -17,7 +19,7 @@ pub async fn check_piece(info: TInfo, idx: usize, data: &[u8]) -> bool {
     }
 }
 
-pub async fn read_piece(info: TInfo, start_file: usize, start_position: usize) -> Vec<u8> {
+pub async fn read_piece(info: Arc<TorrentInfo>, start_file: usize, start_position: usize) -> Vec<u8> {
     let piece_length = info.piece_length;
     let last_file = start_file == info.torrent_files.read().await.len() - 1;
     let mut piece = info.torrent_files.write().await[start_file].read_piece(start_position as u64).await;
@@ -33,7 +35,7 @@ pub async fn read_piece(info: TInfo, start_file: usize, start_position: usize) -
     piece
 }
 
-pub async fn write_piece(info: TInfo, data: &[u8], file_idx: &mut usize, file_position: &mut usize) {
+pub async fn write_piece(info: Arc<TorrentInfo>, data: &[u8], file_idx: &mut usize, file_position: &mut usize) {
     let file_count = info.torrent_files.read().await.len();
     let mut files_lock = info.torrent_files.write().await;
     let mut file = files_lock[*file_idx].file_mut();
@@ -59,7 +61,7 @@ pub async fn write_piece(info: TInfo, data: &[u8], file_idx: &mut usize, file_po
     }
 }
 
-pub async fn check_torrent(info: &mut TInfo) {
+pub async fn check_torrent(info: &mut Arc<TorrentInfo>) {
     let check_time = std::time::Instant::now();
 
     let total_hashes = info.pieces_hashes.len();
@@ -111,7 +113,7 @@ pub async fn check_torrent(info: &mut TInfo) {
     println!("Checked {} pieces in {}s.", current_piece, check_time.elapsed().as_secs());
 }
 
-pub async fn update_missing_pieces(info: &mut TInfo) {
+pub async fn update_missing_pieces(info: &mut Arc<TorrentInfo>) {
     let mut result = Vec::with_capacity(info.pieces_hashes.len());
     let mut piece_idx = 0;
 

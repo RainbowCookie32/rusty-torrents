@@ -1,6 +1,8 @@
 pub mod tcp;
 
-use crate::types::*;
+use std::sync::Arc;
+
+use crate::engine::TorrentInfo;
 use crate::engine::tracker::tcp::TcpTracker;
 
 pub enum TrackerKind {
@@ -16,7 +18,7 @@ pub enum TrackerEvent {
     PeriodicRequest
 }
 
-pub fn create_trackers(trackers: Vec<String>, info: TInfo) -> Vec<TrackerKind> {
+pub fn create_trackers(trackers: Vec<String>, info: Arc<TorrentInfo>) -> Vec<TrackerKind> {
     let mut result = Vec::new();
 
     for tracker in trackers {

@@ -10,22 +10,21 @@ use tokio::sync::RwLock;
 use rusty_parser::ParsedTorrent;
 
 use file::File;
+use piece::Piece;
 use peer::{Bitfield, Peer};
 use tracker::{TrackerKind, TrackerEvent};
-
-use crate::types::*;
 
 pub struct TorrentInfo {
     data: ParsedTorrent,
     piece_length: usize,
 
-    torrent_files: TFiles,
-    torrent_pieces: TPieces,
+    torrent_files: Arc<RwLock<Vec<File>>>,
+    torrent_pieces: Arc<RwLock<Vec<Piece>>>,
 
-    pieces_hashes: THashes,
-    pieces_missing: TMissing,
+    pieces_hashes: Arc<Vec<Vec<u8>>>,
+    pieces_missing: Arc<RwLock<Vec<usize>>>,
 
-    bitfield_client: TClientBitfield
+    bitfield_client: Arc<RwLock<Bitfield>>
 }
 
 pub struct Engine {

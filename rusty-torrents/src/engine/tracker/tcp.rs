@@ -1,10 +1,11 @@
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 use std::net::{Ipv4Addr, SocketAddrV4};
 
 use bytes::Buf;
 use rusty_parser::BEncodeType;
 
-use crate::types::*;
+use crate::engine::TorrentInfo;
 use crate::engine::peer::Peer;
 use crate::engine::peer::tcp::TcpPeer;
 use crate::engine::tracker::TrackerEvent;
@@ -13,7 +14,7 @@ pub struct TcpTracker {
     client_id: String,
     tracker_url: String,
 
-    info: TInfo,
+    info: Arc<TorrentInfo>,
     peers_list: Vec<SocketAddrV4>,
 
     announced: bool,
@@ -22,7 +23,7 @@ pub struct TcpTracker {
 }
 
 impl TcpTracker {
-    pub fn new(client_id: String, tracker_url: String, info: TInfo) -> TcpTracker {
+    pub fn new(client_id: String, tracker_url: String, info: Arc<TorrentInfo>) -> TcpTracker {
         if tracker_url.starts_with("udp:") {
             panic!("Got an udp tracker url on  TcpTracker");
         }
