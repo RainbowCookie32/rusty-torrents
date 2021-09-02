@@ -62,16 +62,12 @@ pub async fn write_piece(info: Arc<TorrentInfo>, data: &[u8], file_idx: &mut usi
 }
 
 pub async fn check_torrent(info: &mut Arc<TorrentInfo>) {
-    let check_time = std::time::Instant::now();
-
     let total_hashes = info.pieces_hashes.len();
     let mut new_hashes: Vec<[u8; 20]> = Vec::with_capacity(total_hashes);
 
     let mut current_file = 0;
     let mut current_piece = 0;
     let mut current_file_offset = 0;
-
-    println!("Checking loaded torrent...");
 
     while current_piece != total_hashes {
         let start_file = current_file;
@@ -109,8 +105,6 @@ pub async fn check_torrent(info: &mut Arc<TorrentInfo>) {
         new_hashes.push(hash);
         info.torrent_pieces.write().await.push(piece);
     }
-    
-    println!("Checked {} pieces in {}s.", current_piece, check_time.elapsed().as_secs());
 }
 
 pub async fn update_missing_pieces(info: &mut Arc<TorrentInfo>) {
@@ -123,6 +117,10 @@ pub async fn update_missing_pieces(info: &mut Arc<TorrentInfo>) {
                 result.push(piece_idx);
             }
 
+            if piece_idx == info.pieces_hashes.len() {
+                break;
+            }
+            
             piece_idx += 1;
         }
     }

@@ -72,10 +72,17 @@ impl Engine {
             bitfield_client: Arc::new(RwLock::new(Bitfield::empty(pieces)))
         };
 
+        let check_time = std::time::Instant::now();
         let mut torrent_info = Arc::new(torrent_info);
 
+        println!("Checking loaded torrent...");
         utils::check_torrent(&mut torrent_info).await;
         utils::update_missing_pieces(&mut torrent_info).await;
+        
+        let total_pieces = torrent_info.pieces_hashes.len();
+        let missing_pieces = total_pieces - torrent_info.pieces_missing.read().await.len();
+    
+        println!("Checked torrent in {}s. {}/{} pieces downloaded.", check_time.elapsed().as_secs(), missing_pieces, total_pieces);
 
         let trackers = tracker::create_trackers(trackers_list, torrent_info.clone());
 
