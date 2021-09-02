@@ -34,31 +34,28 @@ pub struct Engine {
 
 impl Engine {
     pub async fn init(data: Vec<u8>) -> Engine {
-        let data = ParsedTorrent::new(data).unwrap();
-        let (info, _) = data.info();
-        let piece_length = info.get("piece length").unwrap().get_int() as usize;
+        let data = ParsedTorrent::new(data);
+        let piece_length = data.info().piece_length() as usize;
 
         let trackers_list = {
-            let mut list = vec![data.announce()];
-            let announce_list = data.announce_list().get_list();
+            let mut list = vec![data.announce().clone()];
+            let announce_list = data.announce_list();
 
             for item in announce_list {
-                let item = item.get_string();
-
                 if !item.is_empty() {
-                    list.push(item);
+                    list.push(item.clone());
                 }
             }
 
             list
         };
         
-        let torrent_files = Engine::build_file_list(data.get_files(), piece_length as usize).await;
+        let torrent_files = Engine::build_file_list(data.info().files(), piece_length).await;
         let torrent_files = Arc::new(RwLock::new(torrent_files));
 
-        println!("Torrent name: {}", info.get("name").unwrap().get_string());
+        println!("Torrent name: {}", data.get_name());
 
-        let pieces_hashes = Engine::build_hashes_list(info.get("pieces").unwrap().get_string_bytes()).await;
+        let pieces_hashes = data.info().pieces().to_vec();
         let pieces = pieces_hashes.len();
         let pieces_hashes = Arc::from(pieces_hashes);
 
@@ -118,23 +115,13 @@ impl Engine {
         }
     }
 
-    async fn build_file_list(files_data: Vec<(String, i64)>, piece_len: usize) -> Vec<File> {
+    async fn build_file_list(files_data: &[(std::string::String, u64)], piece_len: usize) -> Vec<File> {
         let mut list = Vec::new();
 
         for (filename, size) in files_data {
-            list.push(File::new(filename, size as usize, piece_len).await);
+            list.push(File::new(filename.to_string(), *size as usize, piece_len).await);
         }
 
         list
-    }
-
-    async fn build_hashes_list(data: Vec<u8>) -> Vec<Vec<u8>> {
-        let mut hashes = Vec::new();
-
-        for chunk in data.chunks(20) {
-            hashes.push(chunk.to_owned());
-        }
-
-        hashes
     }
 }

@@ -70,7 +70,7 @@ impl TcpTracker {
         };
 
         let info = self.info.data.info();
-        let info_hash = urlencoding::encode_binary(&info.1);
+        let info_hash = urlencoding::encode_binary(info.info_hash());
 
         // This doesn't consider a smaller final piece, but I don't think it *really* matters.
         let missing_data = self.info.piece_length * self.info.pieces_missing.read().await.len();
@@ -89,42 +89,38 @@ impl TcpTracker {
 
             if let Ok(response) = response {
                 let body: Vec<u8> = response.bytes().await.unwrap_or_default().to_vec();
+                let response_data = BEncodeType::dictionary(&body, &mut 1);
                 
-                if let Ok(response_data) = BEncodeType::dictionary(&body, &mut 1) {
-                    let entries = response_data.get_dictionary();
+                let entries = response_data.get_dictionary();
 
-                    if let Some(peers) = entries.get("peers") {
-                        let mut peers_list = Vec::new();
-                        let peers_bytes = peers.get_string_bytes();
-                        let mut peers_bytes_slice = peers_bytes.as_slice();
+                if let Some(peers) = entries.get("peers") {
+                    let mut peers_list = Vec::new();
+                    let peers_bytes = peers.get_string_bytes();
+                    let mut peers_bytes_slice = peers_bytes.as_slice();
 
-                        for _ in (0..peers_bytes.len()).step_by(6) {
-                            let ip = peers_bytes_slice.get_u32();
-                            let port = peers_bytes_slice.get_u16();
+                    for _ in (0..peers_bytes.len()).step_by(6) {
+                        let ip = peers_bytes_slice.get_u32();
+                        let port = peers_bytes_slice.get_u16();
 
-                            peers_list.push(SocketAddrV4::new(Ipv4Addr::from(ip), port));
-                        }
-
-                        self.peers_list = peers_list;
-                    }
-                    else if let Some(reason) = entries.get("failure reason") {
-                        let reason = reason.get_string();
-
-                        if !reason.is_empty() {
-                            println!("Failed to announce on tracker: {}", reason);
-                        }
+                        peers_list.push(SocketAddrV4::new(Ipv4Addr::from(ip), port));
                     }
 
-                    if let Some(interval) = entries.get("interval") {
-                        self.announce_interval = Duration::from_secs(interval.get_int() as u64);
-                    }
-
-                    self.announced = true;
-                    println!("Announced successfully at {}. Got {} peers.", self.tracker_url, self.peers_list.len());
+                    self.peers_list = peers_list;
                 }
-                else {
-                    println!("Couldn't parse the trackers response. Data received: {}", String::from_utf8_lossy(&body));
+                else if let Some(reason) = entries.get("failure reason") {
+                    let reason = reason.get_string();
+
+                    if !reason.is_empty() {
+                        println!("Failed to announce on tracker: {}", reason);
+                    }
                 }
+
+                if let Some(interval) = entries.get("interval") {
+                    self.announce_interval = Duration::from_secs(interval.get_int() as u64);
+                }
+
+                self.announced = true;
+                println!("Announced successfully at {}. Got {} peers.", self.tracker_url, self.peers_list.len());
 
                 break;
             }

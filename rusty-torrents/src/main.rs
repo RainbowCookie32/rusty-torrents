@@ -2,7 +2,8 @@ mod engine;
 
 use clap::{Arg, App};
 
-fn main() {
+#[tokio::main(flavor = "multi_thread", worker_threads = 2)]
+async fn main() {
     let matches = App::new("rusty-torrents")
         .version("0.1.0")
         .about("makes torrents go brr")
@@ -21,14 +22,6 @@ fn main() {
     let torrent_path = matches.value_of("path").expect("No value for torrent provided");
     let torrent_data = std::fs::read(torrent_path).expect("Couldn't open torrent file");
 
-    let rt = tokio::runtime::Builder::new_multi_thread()
-        .worker_threads(1)
-        .enable_io()
-        .enable_time()
-        .build()
-        .unwrap()
-    ;
-
-    let torrent_engine = rt.block_on(engine::Engine::init(torrent_data));
-    rt.block_on(torrent_engine.start_torrent());
+    let torrent_engine = engine::Engine::init(torrent_data).await;
+    torrent_engine.start_torrent().await;
 }

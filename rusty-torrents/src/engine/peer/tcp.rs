@@ -1,11 +1,12 @@
 use std::sync::Arc;
 use std::net::SocketAddrV4;
 
+use rand::Rng;
 use bytes::Buf;
 
-use futures::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::net::TcpStream;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
-use async_net::TcpStream;
 use async_trait::async_trait;
 
 use crate::engine::utils;
@@ -52,7 +53,7 @@ impl TcpPeer {
 
     fn get_handshake(&self) -> Vec<u8> {
         let id: String = vec!['e'; 20].iter().collect();
-        let info_hash = self.torrent_info.data.info().1;
+        let info_hash = self.torrent_info.data.info().info_hash();
         let mut handshake = b"BitTorrent protocol".to_vec();
 
         handshake.insert(0, 19);
@@ -93,7 +94,7 @@ impl TcpPeer {
         None
     }
 
-    async fn send_peer_message(&mut self, message: Message) {
+    async fn send_peer_message(&mut self, message: Message) -> bool {
         match message {
             Message::KeepAlive => {}
 
@@ -103,6 +104,7 @@ impl TcpPeer {
 
                     if let Err(e) = stream.write_all(&message).await {
                         println!("Error sending Choke message to peer {}. {}", self.address, e.to_string());
+                        return false;
                     }
                     else {
                         self.status.peer_choked = true;
@@ -115,6 +117,7 @@ impl TcpPeer {
 
                     if let Err(e) = stream.write_all(&message).await {
                         println!("Error sending Unchoke message to peer {}. {}", self.address, e.to_string());
+                        return false;
                     }
                     else {
                         self.status.peer_choked = false;
@@ -127,6 +130,7 @@ impl TcpPeer {
 
                     if let Err(e) = stream.write_all(&message).await {
                         println!("Error sending Interested message to peer {}. {}", self.address, e.to_string());
+                        return false;
                     }
                     else {
                         self.status.client_interested = true;
@@ -139,6 +143,7 @@ impl TcpPeer {
 
                     if let Err(e) = stream.write_all(&message).await {
                         println!("Error sending Not Interested message to peer {}. {}", self.address, e.to_string());
+                        return false;
                     }
                     else {
                         self.status.client_interested = false;
@@ -152,6 +157,7 @@ impl TcpPeer {
                 if let Some(stream) = self.stream.as_mut() {
                     if let Err(e) = stream.write_all(&data).await {
                         println!("Error sending Request message to peer {}. {}", self.address, e.to_string());
+                        return false;
                     }
                 }
             }
@@ -159,11 +165,14 @@ impl TcpPeer {
                 if let Some(stream) = self.stream.as_mut() {
                     if let Err(e) = stream.write_all(&data).await {
                         println!("Error sending Piece message to peer {}. {}", self.address, e.to_string());
+                        return false;
                     }
                 }
             }
             Message::Cancel(_data) => {}
         }
+
+        true
     }
 }
 
@@ -200,8 +209,6 @@ impl Peer for TcpPeer {
                 return;
             }
         }
-
-        let rng = fastrand::Rng::new();
 
         loop {
             if !self.handshake_complete {
@@ -276,7 +283,9 @@ impl Peer for TcpPeer {
                                 }
 
                                 if let Some(message) = message {
-                                    self.send_peer_message(message).await;
+                                    if !self.send_peer_message(message).await {
+                                        break;
+                                    }
                                 }
                             }
                         }
@@ -338,7 +347,7 @@ impl Peer for TcpPeer {
                         let mut missing_pieces = self.torrent_info.pieces_missing.write().await;
 
                         if !missing_pieces.is_empty() {
-                            let idx = rng.usize(..missing_pieces.len());
+                            let idx = rand::thread_rng().gen_range(0..missing_pieces.len());
                             let piece_idx = missing_pieces[idx];
     
                             if self.bitfield_peer.is_piece_available(piece_idx as u32) {
@@ -352,12 +361,12 @@ impl Peer for TcpPeer {
                     }
 
                     if self.requested.is_some() {
-                        if self.status.peer_choked {
-                            self.send_peer_message(Message::Unchoke).await;
+                        if self.status.peer_choked && !self.send_peer_message(Message::Unchoke).await {
+                            break;
                         }
 
-                        if !self.status.client_interested {
-                            self.send_peer_message(Message::Interested).await;
+                        if !self.status.client_interested && !self.send_peer_message(Message::Interested).await {
+                            break;
                         }
 
                         let wanted_piece = self.requested.unwrap();
@@ -392,7 +401,9 @@ impl Peer for TcpPeer {
                         }
 
                         if let Some(message) = message {
-                            self.send_peer_message(message).await;
+                            if !self.send_peer_message(message).await {
+                                break;
+                            }
                         }
                     }
                 }
@@ -400,5 +411,7 @@ impl Peer for TcpPeer {
                 tokio::task::yield_now().await;
             }
         }
+        
+        println!("Disconnecting from peer {}", self.address);
     }
 }
