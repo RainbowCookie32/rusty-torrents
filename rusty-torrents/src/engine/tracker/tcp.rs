@@ -72,12 +72,16 @@ impl TcpTracker {
         let info = self.info.data.info();
         let info_hash = urlencoding::encode_binary(info.info_hash());
 
+        let piece_size = self.info.piece_length;
+        let total_size = piece_size * self.info.torrent_pieces.read().await.len();
+
         // This doesn't consider a smaller final piece, but I don't think it *really* matters.
-        let missing_data = self.info.piece_length * self.info.pieces_missing.read().await.len();
+        let missing = self.info.piece_length * self.info.pieces_missing.read().await.len();
+        let downloaded = total_size - missing;
 
         let mut tracker_url = format!(
             "{}?info_hash={}&peer_id={}&port=6881&uploaded={}&downloaded={}&left={}&compact=1",
-            self.tracker_url, info_hash, self.client_id, 0, 0, missing_data
+            self.tracker_url, info_hash, self.client_id, 0, downloaded, missing
         );
 
         if !event.is_empty() {
