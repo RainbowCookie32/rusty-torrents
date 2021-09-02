@@ -51,10 +51,6 @@ impl File {
         buffer
     }
 
-    pub fn write_piece(&mut self, offset: u64, data: Vec<u8>) {
-
-    }
-
     // Get a mutable reference to the file's file.
     pub fn file_mut(&mut self) -> &mut fs::File {
         &mut self.file
