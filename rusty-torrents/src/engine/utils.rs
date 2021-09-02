@@ -117,11 +117,11 @@ pub async fn update_missing_pieces(info: &mut Arc<TorrentInfo>) {
                 result.push(piece_idx);
             }
 
+            piece_idx += 1;
+
             if piece_idx == info.pieces_hashes.len() {
                 break;
             }
-            
-            piece_idx += 1;
         }
     }
 
