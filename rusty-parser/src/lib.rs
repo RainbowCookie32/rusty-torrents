@@ -2,33 +2,21 @@ use std::collections::HashMap;
 
 #[derive(Debug, Clone)]
 pub enum BEncodeType {
-    BInt { value: i64 },
+    BInt { value: u64 },
     BString { value: String, bytes: Vec<u8> },
 
     BList { entries: Vec<BEncodeType> },
     BDictionary { entries: HashMap<String, BEncodeType>, hash: [u8; 20] }
 }
 
-#[derive(Debug)]
-pub enum ParseError {
-    BadLength(usize),
-    MissingSection(String),
-    UnknownFileFormat
-}
-
 impl BEncodeType {
-    pub fn string(data: &[u8], position: &mut usize) -> Result<BEncodeType, ParseError> {
-        let result = BEncodeType::parse_string(data, position);
-        
-        if let Ok((value, bytes)) = result {
-            Ok(BEncodeType::BString { value, bytes })
-        }
-        else {
-            Err(result.unwrap_err())
-        }
+    pub fn string(data: &[u8], position: &mut usize) -> BEncodeType {
+        let (value, bytes) = BEncodeType::parse_string(data, position);
+
+        BEncodeType::BString { value, bytes }
     }
 
-    fn parse_string(data: &[u8], position: &mut usize) -> Result<(String, Vec<u8>), ParseError> {
+    fn parse_string(data: &[u8], position: &mut usize) -> (String, Vec<u8>) {
         let string_length = {
             let mut string_data = String::new();
 
@@ -45,28 +33,23 @@ impl BEncodeType {
                 }
             }
 
-            string_data.parse()
+            string_data.parse().expect("Bad string length.")
         };
 
-        if let Ok(string_length) = string_length {
-            let mut result = String::with_capacity(string_length);
-            let mut result_bytes = Vec::new();
+        let mut result = String::with_capacity(string_length);
+        let mut result_bytes = Vec::new();
 
-            for offset in 0..string_length {
-                result.push(data[*position + offset] as char);
-                result_bytes.push(data[*position + offset]);
-            }
-
-            *position += string_length;
-
-            Ok((result, result_bytes))
+        for offset in 0..string_length {
+            result.push(data[*position + offset] as char);
+            result_bytes.push(data[*position + offset]);
         }
-        else {
-            Err(ParseError::BadLength(*position))
-        }
+
+        *position += string_length;
+
+        (result, result_bytes)
     }
 
-    pub fn integer(data: &[u8], position: &mut usize) -> Result<BEncodeType, ParseError> {
+    pub fn integer(data: &[u8], position: &mut usize) -> BEncodeType {
         let mut result = String::new();
 
         loop {
@@ -82,15 +65,12 @@ impl BEncodeType {
             }
         }
 
-        if let Ok(value) = result.parse() {
-            Ok(BEncodeType::BInt { value })
-        }
-        else {
-            Err(ParseError::BadLength(*position))
-        }
+        let value = result.parse().expect("Bad int length.");
+
+        BEncodeType::BInt { value }
     }
 
-    pub fn list(data: &[u8], position: &mut usize) -> Result<BEncodeType, ParseError> {
+    pub fn list(data: &[u8], position: &mut usize) -> BEncodeType {
         let mut entries = Vec::new();
 
         loop {
@@ -109,12 +89,7 @@ impl BEncodeType {
                 }
             };
 
-            if let Ok(value) = value {
-                entries.push(value);
-            }
-            else if let Err(error) = value {
-                return Err(error);
-            }
+            entries.push(value);
 
             if data[*position] as char == 'e' {
                 *position += 1;
@@ -122,41 +97,31 @@ impl BEncodeType {
             }
         }
 
-        Ok(BEncodeType::BList { entries })
+        BEncodeType::BList { entries }
     }
 
-    pub fn dictionary(data: &[u8], position: &mut usize) -> Result<BEncodeType, ParseError> {
+    pub fn dictionary(data: &[u8], position: &mut usize) -> BEncodeType {
         let start = *position as u16;
         let mut entries = HashMap::new();
 
         loop {
-            let key = BEncodeType::parse_string(data, position);
+            let (key, _) = BEncodeType::parse_string(data, position);
 
-            if let Ok((key, _)) = key {
-                let value_byte = data[*position] as char;
+            let value_byte = data[*position] as char;
 
-                *position += 1;
+            *position += 1;
 
-                let value = match value_byte {
-                    'd' => BEncodeType::dictionary(data, position),
-                    'l' => BEncodeType::list(data, position),
-                    'i' => BEncodeType::integer(data, position),
-                    _ => {
-                        *position -= 1;
-                        BEncodeType::string(data, position)
-                    }
-                };
-
-                if let Ok(value) = value {
-                    entries.insert(key, value);
+            let value = match value_byte {
+                'd' => BEncodeType::dictionary(data, position),
+                'l' => BEncodeType::list(data, position),
+                'i' => BEncodeType::integer(data, position),
+                _ => {
+                    *position -= 1;
+                    BEncodeType::string(data, position)
                 }
-                else if let Err(error) = value {
-                    return Err(error);
-                }
-            }
-            else if let Err(error) = key {
-                return Err(error);
-            }
+            };
+
+            entries.insert(key, value);
 
             if data[*position] as char == 'e' {
                 *position += 1;
@@ -167,15 +132,15 @@ impl BEncodeType {
         let dictionary_bytes = &data[start as usize - 1..*position];
         let hash = sha1::Sha1::from(dictionary_bytes).digest().bytes();
 
-        Ok(BEncodeType::BDictionary { entries, hash })
+        BEncodeType::BDictionary { entries, hash }
     }
 
-    pub fn get_int(&self) -> i64 {
+    pub fn get_int(&self) -> u64 {
         if let BEncodeType::BInt { value } = self {
             *value
         }
         else {
-            -1
+            u64::MAX
         }
     }
 
@@ -226,143 +191,191 @@ impl BEncodeType {
 }
 
 pub struct ParsedTorrent {
-    announce: BEncodeType,
-    announce_list: BEncodeType,
-    creation_date: BEncodeType,
+    announce: String,
+    announce_list: Vec<String>,
+    creation_date: String,
     
-    info: BEncodeType
+    info: TorrentInfo
 }
 
 impl ParsedTorrent {
-    pub fn new(data: Vec<u8>) -> Result<ParsedTorrent, ParseError> {
+    pub fn new(data: Vec<u8>) -> ParsedTorrent {
         let mut position = 0;
         let value_byte = data[position] as char;
     
         position += 1;
     
         if value_byte == 'd' {
-            let result = BEncodeType::dictionary(&data, &mut position);
+            let entries = BEncodeType::dictionary(&data, &mut position).get_dictionary();
 
-            if let Ok(torrent_data) = result {
-                let entries = torrent_data.get_dictionary();
-
-                let announce = {
-                    if let Some(entry) = entries.get("announce") {
-                        entry.clone()
-                    }
-                    else {
-                        return Err(ParseError::MissingSection(String::from("announce")))
-                    }
-                };
-            
-                let announce_list = {
-                    if let Some(entry) = entries.get("announce-list") {
-                        entry.clone()
-                    }
-                    else {
-                        return Err(ParseError::MissingSection(String::from("announce-list")))
-                    }
-                };
-            
-                let creation_date = {
-                    if let Some(entry) = entries.get("creation date") {
-                        entry.clone()
-                    }
-                    else {
-                        return Err(ParseError::MissingSection(String::from("creation date")))
-                    }
-                };
-            
-                let info = {
-                    if let Some(entry) = entries.get("info") {
-                        entry.clone()
-                    }
-                    else {
-                        return Err(ParseError::MissingSection(String::from("info")))
-                    }
-                };
-            
-                Ok(ParsedTorrent {
-                    announce,
-                    announce_list,
-                    creation_date,
-            
-                    info
-                })
-            }
-            else if let Err(error) = result {
-                Err(error)
-            }
-            else {
-                unreachable!()
+            let announce = {
+                if let Some(entry) = entries.get("announce") {
+                    entry.get_string()
+                }
+                else {
+                    String::new()
+                }
+            };
+        
+            let announce_list = {
+                if let Some(entry) = entries.get("announce-list") {
+                    entry.get_list().iter().map(|e| e.get_string()).collect()
+                }
+                else {
+                    Vec::new()
+                }
+            };
+        
+            let creation_date = {
+                if let Some(entry) = entries.get("creation date") {
+                    entry.get_string()
+                }
+                else {
+                    String::new()
+                }
+            };
+        
+            let info = {
+                if let Some(entry) = entries.get("info") {
+                    TorrentInfo::new(entry)
+                }
+                else {
+                    panic!("Couldn't find info section")
+                }
+            };
+        
+            ParsedTorrent {
+                announce,
+                announce_list,
+                creation_date,
+        
+                info
             }
         }
         else {
-            Err(ParseError::UnknownFileFormat)
+            panic!("Malformed torrent file")
         }
     }
 
-    pub fn announce(&self) -> String {
-        self.announce.get_string()
+    pub fn announce(&self) -> &String {
+        &self.announce
     }
 
-    pub fn announce_list(&self) -> &BEncodeType {
+    pub fn announce_list(&self) -> &Vec<String> {
         &self.announce_list
     }
 
-    pub fn creation_date(&self) -> &BEncodeType {
+    pub fn creation_date(&self) -> &String {
         &self.creation_date
     }
 
-    pub fn info(&self) -> (HashMap<String, BEncodeType>, [u8; 20]) {
-        (self.info.get_dictionary(), self.info.get_dictionary_hash())
+    pub fn info(&self) -> &TorrentInfo {
+        &self.info
     }
 
     pub fn get_name(&self) -> String {
-        if let Some(name) = self.info.get_dictionary().get("name") {
-            return name.get_string();
-        }
-        
-        panic!("Couldn't get torrent's name");
+        self.info.name.clone()
     }
 
-    pub fn get_files(&self) -> Vec<(String, i64)> {
-        let info = self.info.get_dictionary();
-        let torrent_name = self.get_name();
-
-        if let Some(files) = info.get("files") {
-            let file_list = files.get_list();
-            let mut files = Vec::new();
-
-            for entry in file_list {
-                let file_info = entry.get_dictionary();
-                
-                if let (Some(path), Some(length)) = (file_info.get("path"), file_info.get("length")) {
-                    let filename = path.get_list();
-                    let full_path = format!("{}/{}", torrent_name, filename[0].get_string());
-
-                    files.push((full_path, length.get_int()));
-                }
-            }
-
-            files
-        }
-        else if let Some(length) = info.get("length") {
-            vec![(torrent_name, length.get_int())]
-        }
-        else {
-            panic!("couldn't find torrent's name");
-        }
+    pub fn get_files(&self) -> &Vec<(String, u64)> {
+        &self.info.files
     }
 }
 
-#[cfg(test)]
-mod tests {
-    #[test]
-    fn torrent_parsing() {
-        let file_data = std::fs::read("/home/rainbowcookie/Downloads/ubuntu-21.04-desktop-amd64.iso.torrent").unwrap();
-        let result = crate::ParsedTorrent::new(file_data);
-        
-        assert!(result.is_ok())
+pub struct TorrentInfo {
+    info_hash: [u8; 20],
+
+    length: u64,
+    name: String,
+    piece_length: u64,
+
+    files: Vec<(String, u64)>,
+    pieces: Vec<Vec<u8>>
+}
+
+impl TorrentInfo {
+    pub fn new(info: &BEncodeType) -> TorrentInfo {
+        let info_hash = info.get_dictionary_hash();
+        let info = info.get_dictionary();
+
+        let length = info.get("length").unwrap().get_int();
+        let name = info.get("name").unwrap().get_string();
+        let piece_length = info.get("piece length").unwrap().get_int();
+
+        let files = {
+            if let Some(files) = info.get("files") {
+                let file_list = files.get_list();
+                let mut files = Vec::new();
+    
+                for entry in file_list {
+                    let file_info = entry.get_dictionary();
+                    
+                    if let (Some(path), Some(length)) = (file_info.get("path"), file_info.get("length")) {
+                        let filename = path.get_list();
+                        let full_path = format!("{}/{}", &name, filename[0].get_string());
+    
+                        files.push((full_path, length.get_int()));
+                    }
+                }
+    
+                files
+            }
+            else {
+                vec![(name.clone(), length)]
+            }
+        };
+
+        let pieces = {
+            let bytes = info.get("pieces").unwrap().get_string_bytes();
+            let chunks = bytes.chunks(20);
+            let mut hashes = Vec::with_capacity(chunks.len());
+
+            for chunk in chunks {
+                hashes.push(chunk.to_owned());
+            }
+
+            hashes
+        };
+
+        TorrentInfo {
+            info_hash,
+
+            length,
+            name,
+            piece_length,
+
+            files,
+            pieces
+        }
+    }
+
+    /// Get a reference to the torrent info's info hash.
+    pub fn info_hash(&self) -> &[u8; 20] {
+        &self.info_hash
+    }
+
+    /// Get a reference to the torrent info's length.
+    pub fn length(&self) -> u64 {
+        self.length
+    }
+
+    /// Get a reference to the torrent info's name.
+    pub fn name(&self) -> &str {
+        self.name.as_str()
+    }
+
+    /// Get a reference to the torrent info's piece length.
+    pub fn piece_length(&self) -> u64 {
+        self.piece_length
+    }
+
+    /// Get a reference to the torrent info's files.
+    pub fn files(&self) -> &[(String, u64)] {
+        self.files.as_slice()
+    }
+
+    /// Get a reference to the torrent info's pieces.
+    pub fn pieces(&self) -> &[Vec<u8>] {
+        self.pieces.as_slice()
     }
 }
