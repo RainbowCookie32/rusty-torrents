@@ -106,6 +106,7 @@ impl Engine {
             tokio::task::spawn(async move {
                 let mut peer = peer;
 
+                peer.connect().await;
                 peer.handle_events().await;
             });
         }

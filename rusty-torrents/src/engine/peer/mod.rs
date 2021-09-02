@@ -5,6 +5,7 @@ use async_trait::async_trait;
 
 #[async_trait]
 pub trait Peer {
+    async fn connect(&mut self) -> bool;
     async fn handle_events(&mut self);
 }
 
