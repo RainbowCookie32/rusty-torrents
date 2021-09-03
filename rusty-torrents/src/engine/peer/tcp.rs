@@ -216,120 +216,126 @@ impl Peer for TcpPeer {
         }
     }
 
-    async fn handle_events(&mut self) {
-        loop {
-            if let Some(message) = self.get_peer_message().await {
-                match message {
-                    Message::KeepAlive => {}
+    async fn handle_peer_messages(&mut self) -> bool {
+        if let Some(message) = self.get_peer_message().await {
+            match message {
+                Message::KeepAlive => {}
 
-                    Message::Choke => {
-                        self.status.client_choked = true;
-                    }
-                    Message::Unchoke => {
-                        self.status.client_choked = false;
-                    }
-                    Message::Interested => {
-                        self.status.peer_interested = true;
-                    }
-                    Message::NotInterested => {
-                        self.status.peer_interested = false;
-                    }
+                Message::Choke => {
+                    self.status.client_choked = true;
+                }
+                Message::Unchoke => {
+                    self.status.client_choked = false;
+                }
+                Message::Interested => {
+                    self.status.peer_interested = true;
+                }
+                Message::NotInterested => {
+                    self.status.peer_interested = false;
+                }
 
-                    Message::Have(data) => {
-                        let piece = data.as_slice().get_u32();
+                Message::Have(data) => {
+                    let piece = data.as_slice().get_u32();
 
-                        self.bitfield_peer.piece_finished(piece);
-                    }
-                    Message::Bitfield(data) => {
-                        self.bitfield_peer = Bitfield::from_peer_data(data);
-                    }
-                    Message::Request(data) => {
-                        let mut data = data.as_slice();
-                        
-                        let piece_idx = data.get_u32();
-                        let block_offset = data.get_u32() as usize;
-                        let block_length = data.get_u32() as usize;
+                    self.bitfield_peer.piece_finished(piece);
+                }
+                Message::Bitfield(data) => {
+                    self.bitfield_peer = Bitfield::from_peer_data(data);
+                }
+                Message::Request(data) => {
+                    let mut data = data.as_slice();
+                    
+                    let piece_idx = data.get_u32();
+                    let block_offset = data.get_u32() as usize;
+                    let block_length = data.get_u32() as usize;
 
-                        if self.torrent_info.bitfield_client.read().await.is_piece_available(piece_idx) && !self.status.client_choked {
-                            let mut message = None;
+                    if self.torrent_info.bitfield_client.read().await.is_piece_available(piece_idx) && !self.status.client_choked {
+                        let mut message = None;
 
-                            if let Some(piece) = self.torrent_info.torrent_pieces.read().await.get(piece_idx as usize) {
-                                let mut message_data = Vec::new();
+                        if let Some(piece) = self.torrent_info.torrent_pieces.read().await.get(piece_idx as usize) {
+                            let mut message_data = Vec::new();
 
-                                let (start_file, start_position) = piece.get_offsets();
-                                let piece = utils::read_piece(self.torrent_info.clone(), start_file, start_position).await;
-                                let mut block_data = piece[block_offset..block_offset+block_length].to_vec();
+                            let (start_file, start_position) = piece.get_offsets();
+                            let piece = utils::read_piece(self.torrent_info.clone(), start_file, start_position).await;
+                            let mut block_data = piece[block_offset..block_offset+block_length].to_vec();
 
-                                // 9 = One byte for Message ID, 4 for Piece Index, and 4 for Block Offset.
-                                let message_length = 9 + block_data.len() as u32;
+                            // 9 = One byte for Message ID, 4 for Piece Index, and 4 for Block Offset.
+                            let message_length = 9 + block_data.len() as u32;
 
-                                message_data.append(&mut message_length.to_be_bytes().to_vec());
-                                // ID 7 = Piece.
-                                message_data.push(7);
-                                message_data.append(&mut (block_offset as u32).to_be_bytes().to_vec());
-                                message_data.append(&mut block_data);
+                            message_data.append(&mut message_length.to_be_bytes().to_vec());
+                            // ID 7 = Piece.
+                            message_data.push(7);
+                            message_data.append(&mut (block_offset as u32).to_be_bytes().to_vec());
+                            message_data.append(&mut block_data);
 
-                                message = Some(Message::Piece(message_data));
-                            }
-
-                            if let Some(message) = message {
-                                if !self.send_peer_message(message).await {
-                                    break;
-                                }
-                            }
-                        }
-                    }
-                    Message::Piece(data) => {
-                        let mut data_slice = data.as_slice();
-
-                        let piece_idx = data_slice.get_u32();
-                        let _block_offset = data_slice.get_u32();
-
-                        if let Some(requested) = self.requested.as_ref() {
-                            if *requested != piece_idx as usize {
-                                // Mismatched piece, drop the peer.
-                                println!("Received data for piece {}, but requested piece {}.", piece_idx, requested);
-                                break;
-                            }
-                        }
-                        else {
-                            // Unsolicited data, drop the peer just in case.
-                            println!("Peer sent data for piece {}, but a piece wasn't requested.", piece_idx);
-                            break;
+                            message = Some(Message::Piece(message_data));
                         }
 
-                        if let Some(piece) = self.torrent_info.torrent_pieces.write().await.get_mut(piece_idx as usize) {
-                            let buf = data_slice.to_vec();
-
-                            if piece.add_received_bytes(buf) {
-                                if piece.check_piece() {
-                                    let (mut start_file, mut start_position) = piece.get_offsets();
-
-                                    piece.set_finished(true);
-                                    piece.set_requested(false);
-                                    utils::write_piece(self.torrent_info.clone(), piece.piece_data(), &mut start_file, &mut start_position).await;
-
-                                    println!("Piece {} finished.", piece_idx);
-                                }
-                                else {
-                                    piece.reset_piece();
-                                    println!("Piece {} was completed, but the hash didn't match.", piece_idx);
-                                }
+                        if let Some(message) = message {
+                            if !self.send_peer_message(message).await {
+                                return false;
                             }
                         }
-
-                        self.waiting_for_response = false;
-                    }
-                    Message::Cancel(data) => {
-                        let mut data = data.as_slice();
-                        
-                        let _piece = data.get_u32();
-                        let _block_offset = data.get_u32();
-                        let _block_length = data.get_u32();
                     }
                 }
-            }
+                Message::Piece(data) => {
+                    let mut data_slice = data.as_slice();
 
+                    let piece_idx = data_slice.get_u32();
+                    let _block_offset = data_slice.get_u32();
+
+                    if let Some(requested) = self.requested.as_ref() {
+                        if *requested != piece_idx as usize {
+                            // Mismatched piece, drop the peer.
+                            println!("Received data for piece {}, but requested piece {}.", piece_idx, requested);
+                            return false;
+                        }
+                    }
+                    else {
+                        // Unsolicited data, drop the peer just in case.
+                        println!("Peer sent data for piece {}, but a piece wasn't requested.", piece_idx);
+                        return false;
+                    }
+
+                    if let Some(piece) = self.torrent_info.torrent_pieces.write().await.get_mut(piece_idx as usize) {
+                        let buf = data_slice.to_vec();
+
+                        if piece.add_received_bytes(buf) {
+                            if piece.check_piece() {
+                                let (mut start_file, mut start_position) = piece.get_offsets();
+
+                                piece.set_finished(true);
+                                piece.set_requested(false);
+                                utils::write_piece(self.torrent_info.clone(), piece.piece_data(), &mut start_file, &mut start_position).await;
+
+                                println!("Piece {} finished.", piece_idx);
+                            }
+                            else {
+                                piece.reset_piece();
+                                println!("Piece {} was completed, but the hash didn't match.", piece_idx);
+                            }
+                        }
+                    }
+
+                    self.waiting_for_response = false;
+                }
+                Message::Cancel(data) => {
+                    let mut data = data.as_slice();
+                    
+                    let _piece = data.get_u32();
+                    let _block_offset = data.get_u32();
+                    let _block_length = data.get_u32();
+                }
+            }
+        }
+
+        true
+    }
+
+    async fn handle_events(&mut self) {
+        loop {
+            self.handle_peer_messages().await;
+            
             if !self.status.client_choked && !self.waiting_for_response {
                 if self.requested.is_none() {
                     if !self.torrent_info.get_missing_pieces_count().await > 0 {
