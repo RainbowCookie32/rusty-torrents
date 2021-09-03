@@ -26,7 +26,13 @@ pub struct TorrentInfo {
 }
 
 impl TorrentInfo {
-    pub async fn request_piece(&self, idx: usize) {
+    pub async fn release_piece(&self, idx: usize) {
+        if let Some(piece) = self.torrent_pieces.write().await.get_mut(idx) {
+            piece.set_requested(false);
+        }
+    }
+
+    pub async fn piece_requested(&self, idx: usize) {
         if let Some(piece) = self.torrent_pieces.write().await.get_mut(idx) {
             piece.set_requested(true);
         }
@@ -127,11 +133,45 @@ impl Engine {
         }
 
         for peer in peers {
+            let info = self.torrent_info.clone();
+
             tokio::task::spawn(async move {
+                let info = info;
                 let mut peer = peer;
 
                 if peer.connect().await {
-                    peer.handle_events().await;
+                    loop {
+                        if !peer.handle_peer_messages().await {
+                            let piece = peer.get_assigned_piece();
+                            
+                            if let Some(piece) = piece {
+                                info.release_piece(piece).await;
+                            }
+
+                            break;
+                        }
+
+                        tokio::task::yield_now().await;
+
+                        if peer.should_request() {
+                            let piece = peer.get_assigned_piece();
+
+                            if let Some(piece) = piece {
+                                if peer.request_piece(piece).await {
+                                    info.piece_requested(piece).await;
+                                }
+                            }
+                            else {
+                                let piece = info.get_unfinished_piece_idx().await;
+
+                                if info.get_missing_pieces_count().await > 0 && peer.request_piece(piece).await {
+                                    info.piece_requested(piece).await;
+                                }
+                            }
+                        }
+
+                        tokio::task::yield_now().await;
+                    }
                 }
             });
         }

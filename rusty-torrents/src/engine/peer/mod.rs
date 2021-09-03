@@ -7,7 +7,10 @@ use async_trait::async_trait;
 pub trait Peer {
     async fn connect(&mut self) -> bool;
     async fn handle_peer_messages(&mut self) -> bool;
-    async fn handle_events(&mut self);
+    async fn request_piece(&mut self, piece: usize) -> bool;
+
+    fn should_request(&self) -> bool;
+    fn get_assigned_piece(&self) -> Option<usize>;
 }
 
 pub struct PeerStatus {

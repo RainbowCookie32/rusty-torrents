@@ -314,6 +314,8 @@ impl Peer for TcpPeer {
                                 piece.reset_piece();
                                 println!("Piece {} was completed, but the hash didn't match.", piece_idx);
                             }
+
+                            self.requested = None;
                         }
                     }
 
@@ -332,83 +334,61 @@ impl Peer for TcpPeer {
         true
     }
 
-    async fn handle_events(&mut self) {
-        loop {
-            self.handle_peer_messages().await;
-            
-            if !self.status.client_choked && !self.waiting_for_response {
-                if self.requested.is_none() {
-                    if !self.torrent_info.get_missing_pieces_count().await > 0 {
-                        let idx = self.torrent_info.get_unfinished_piece_idx().await;
+    async fn request_piece(&mut self, piece: usize) -> bool {
+        let piece_idx = piece as u32;
 
-                        if self.bitfield_peer.is_piece_available(idx as u32) {
-                            self.requested = Some(idx);
-                            self.torrent_info.request_piece(idx).await;
-                        }
-                    }
-                    else {
-                        println!("No more missing pieces, exiting...");
-                        break;
-                    }
-                }
-
-                if self.requested.is_some() {
-                    if self.status.peer_choked && !self.send_peer_message(Message::Unchoke).await {
-                        break;
-                    }
-
-                    if !self.status.client_interested && !self.send_peer_message(Message::Interested).await {
-                        break;
-                    }
-
-                    let wanted_piece = self.requested.unwrap();
-                    let mut message = None;
-
-                    if let Some(piece) = self.torrent_info.torrent_pieces.read().await.get(wanted_piece) {
-                        if !piece.finished() {
-                            let wanted_piece = wanted_piece as u32;
-                            let (block_offset, block_length) = piece.get_block_request();
-
-                            let length: u32 = 13;
-                            let mut message_data = Vec::new();
-
-                            // Length.
-                            message_data.append(&mut length.to_be_bytes().to_vec());
-                            // Message ID (6 for Request).
-                            message_data.push(6);
-                            // Message Body (Piece Index, Block Offset, and Block Length);
-                            message_data.append(&mut wanted_piece.to_be_bytes().to_vec());
-                            message_data.append(&mut block_offset.to_be_bytes().to_vec());
-                            message_data.append(&mut block_length.to_be_bytes().to_vec());
-
-                            self.requested = Some(wanted_piece as usize);
-                            self.waiting_for_response = true;
-                            
-                            message = Some(Message::Request(message_data));
-                        }
-                        else {
-                            self.requested = None;
-                            self.waiting_for_response = false;
-                        }
-                    }
-
-                    if let Some(message) = message {
-                        if !self.send_peer_message(message).await {
-                            break;
-                        }
-                    }
-                }
+        if self.bitfield_peer.is_piece_available(piece_idx as u32) {
+            if self.waiting_for_response {
+                return true;
             }
 
-            tokio::task::yield_now().await;
-        }
+            if self.status.peer_choked && !self.send_peer_message(Message::Unchoke).await {
+                return false;
+            }
 
-        // If a piece was requested by this peer, release it before dropping the connection
-        // so another peer can complete it.
-        if let Some(piece) = self.requested {
-            self.torrent_info.torrent_pieces.write().await[piece].set_requested(false);
+            if !self.status.client_interested && !self.send_peer_message(Message::Interested).await {
+                return false;
+            }
+
+            let mut message_data = Vec::with_capacity(13);
+            let (block_offset, block_length) = {
+                if let Some(piece) = self.torrent_info.torrent_pieces.read().await.get(piece_idx as usize) {
+                    piece.get_block_request()
+                }
+                else {
+                    return false;
+                }
+            };
+
+            // Length.
+            message_data.append(&mut 13_u32.to_be_bytes().to_vec());
+            // Message ID (6 for Request).
+            message_data.push(6);
+            // Message Body (Piece Index, Block Offset, and Block Length);
+            message_data.append(&mut piece_idx.to_be_bytes().to_vec());
+            message_data.append(&mut block_offset.to_be_bytes().to_vec());
+            message_data.append(&mut block_length.to_be_bytes().to_vec());
+
+            if self.send_peer_message(Message::Request(message_data)).await {
+                self.waiting_for_response = true;
+                self.requested = Some(piece_idx as usize);
+
+                true
+            }
+            else {
+                false
+            }
         }
-        
-        println!("Disconnecting from peer {}", self.address);
+        else {
+            false
+        }
+    }
+
+    fn should_request(&self) -> bool {
+        !self.waiting_for_response
+    }
+
+    fn get_assigned_piece(&self) -> Option<usize> {
+        self.requested
     }
 }
