@@ -1,11 +1,12 @@
+mod peer;
+mod file;
+mod piece;
+mod utils;
 mod tracker;
-pub mod peer;
-pub mod file;
-pub mod piece;
-pub mod utils;
 
 use std::sync::Arc;
 
+use rand::Rng;
 use tokio::sync::RwLock;
 use rusty_parser::ParsedTorrent;
 
@@ -21,10 +22,29 @@ pub struct TorrentInfo {
     torrent_files: Arc<RwLock<Vec<File>>>,
     torrent_pieces: Arc<RwLock<Vec<Piece>>>,
 
-    pieces_hashes: Arc<Vec<Vec<u8>>>,
-    pieces_missing: Arc<RwLock<Vec<usize>>>,
-
     bitfield_client: Arc<RwLock<Bitfield>>
+}
+
+impl TorrentInfo {
+    pub async fn request_piece(&self, idx: usize) {
+        if let Some(piece) = self.torrent_pieces.write().await.get_mut(idx) {
+            piece.set_requested(true);
+        }
+    }
+
+    pub async fn get_unfinished_piece_idx(&self) -> usize {
+        let pieces = self.torrent_pieces.read().await;
+        rand::thread_rng().gen_range(0..pieces.iter().filter(|p| !p.finished() && !p.requested()).count())
+    }
+
+    pub async fn get_pieces_count(&self) -> usize {
+        self.torrent_pieces.read().await.len()
+    }
+
+    pub async fn get_missing_pieces_count(&self) -> usize {
+        let pieces = self.torrent_pieces.read().await;
+        pieces.iter().filter(|p| !p.finished()).count()
+    }
 }
 
 pub struct Engine {
@@ -55,9 +75,7 @@ impl Engine {
 
         println!("Torrent name: {}", data.get_name());
 
-        let pieces_hashes = data.info().pieces().to_vec();
-        let pieces = pieces_hashes.len();
-        let pieces_hashes = Arc::from(pieces_hashes);
+        let pieces = data.info().pieces().len();
 
         let torrent_info = TorrentInfo {
             data,
@@ -65,9 +83,6 @@ impl Engine {
 
             torrent_files,
             torrent_pieces: Arc::new(RwLock::new(Vec::new())),
-
-            pieces_hashes,
-            pieces_missing: Arc::new(RwLock::new(Vec::new())),
 
             bitfield_client: Arc::new(RwLock::new(Bitfield::empty(pieces)))
         };
@@ -77,12 +92,14 @@ impl Engine {
 
         println!("Checking loaded torrent...");
         utils::check_torrent(&mut torrent_info).await;
-        utils::update_missing_pieces(&mut torrent_info).await;
-        
-        let total_pieces = torrent_info.pieces_hashes.len();
-        let missing_pieces = total_pieces - torrent_info.pieces_missing.read().await.len();
+
+        {
+            let pieces = torrent_info.torrent_pieces.read().await;
+            let total_pieces = pieces.len();
+            let missing_pieces = pieces.iter().filter(|p| !p.finished()).count();
     
-        println!("Checked torrent in {}s. {}/{} pieces downloaded.", check_time.elapsed().as_secs(), missing_pieces, total_pieces);
+            println!("Checked torrent in {}s. {}/{} pieces downloaded.", check_time.elapsed().as_secs(), total_pieces - missing_pieces, total_pieces);
+        }
 
         let trackers = tracker::create_trackers(trackers_list, torrent_info.clone());
 
@@ -99,7 +116,7 @@ impl Engine {
             match tracker {
                 TrackerKind::Tcp(t) => {
                     t.send_message(TrackerEvent::Started).await;
-                    peers.append(&mut t.get_peers());
+                    peers.append(&mut t.get_peers().await);
                 },
                 TrackerKind::Udp => unimplemented!(),
             }

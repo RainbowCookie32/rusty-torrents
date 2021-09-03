@@ -41,11 +41,11 @@ impl TcpTracker {
         }
     }
 
-    pub fn get_peers(&self) -> Vec<Box<dyn Peer+Send>> {
+    pub async fn get_peers(&self) -> Vec<Box<dyn Peer+Send>> {
         let mut peers: Vec<Box<dyn Peer+Send>> = Vec::new();
 
         for address in self.peers_list.iter() {
-            peers.push(Box::new(TcpPeer::new(*address, self.info.clone())));
+            peers.push(Box::new(TcpPeer::new(*address, self.info.clone()).await));
         }
 
         peers
@@ -76,7 +76,7 @@ impl TcpTracker {
         let total_size = piece_size * self.info.torrent_pieces.read().await.len();
 
         // This doesn't consider a smaller final piece, but I don't think it *really* matters.
-        let missing = self.info.piece_length * self.info.pieces_missing.read().await.len();
+        let missing = self.info.piece_length * self.info.get_missing_pieces_count().await;
         let downloaded = total_size - missing;
 
         let mut tracker_url = format!(

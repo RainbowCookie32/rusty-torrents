@@ -1,7 +1,6 @@
 use std::sync::Arc;
 use std::net::SocketAddrV4;
 
-use rand::Rng;
 use bytes::Buf;
 
 use tokio::net::TcpStream;
@@ -22,15 +21,13 @@ pub struct TcpPeer {
 
     bitfield_peer: Bitfield,
     
-    piece_data: Vec<u8>,
     requested: Option<usize>,
     waiting_for_response: bool
 }
 
 impl TcpPeer {
-    pub fn new(address: SocketAddrV4, torrent_info: Arc<TorrentInfo>) -> TcpPeer {
-        let pieces = torrent_info.pieces_hashes.len();
-        let piece_length = torrent_info.piece_length;
+    pub async fn new(address: SocketAddrV4, torrent_info: Arc<TorrentInfo>) -> TcpPeer {
+        let pieces = torrent_info.get_pieces_count().await;
 
         TcpPeer {
             address,
@@ -41,7 +38,6 @@ impl TcpPeer {
 
             bitfield_peer: Bitfield::empty(pieces),
 
-            piece_data: Vec::with_capacity(piece_length),
             requested: None,
             waiting_for_response: false
         }
@@ -181,6 +177,45 @@ impl TcpPeer {
 
 #[async_trait]
 impl Peer for TcpPeer {
+    async fn connect(&mut self) -> bool {
+        let handshake = self.get_handshake();
+        self.stream = TcpStream::connect(&self.address).await.ok();
+
+        if let Some(stream) = self.stream.as_mut() {
+            if stream.write_all(&handshake).await.is_err() {
+                return false;
+            }
+        }
+        else {
+            return false;
+        }
+
+        loop {
+            if let Some(stream) = self.stream.as_mut() {
+                if let Ok(bytes) = stream.peek(&mut [0; 68]).await {
+                    if bytes >= 68 {
+                        let mut buffer = vec![0; 68];
+                        
+                        if stream.read_exact(&mut buffer).await.is_ok() {
+                            let mut data = Vec::new();
+                            let mut bitfield = self.torrent_info.bitfield_client.read().await.as_bytes();
+                            let message_length = bitfield.len() as u32 + 1;
+
+                            data.append(&mut message_length.to_be_bytes().to_vec());
+                            data.push(5);
+                            data.append(&mut bitfield);
+
+                            return self.send_peer_message(Message::Bitfield(data)).await;
+                        }
+                    }
+                    else {
+                        tokio::task::yield_now().await;
+                    }
+                }
+            }
+        }
+    }
+
     async fn handle_events(&mut self) {
         loop {
             if let Some(message) = self.get_peer_message().await {
@@ -252,36 +287,34 @@ impl Peer for TcpPeer {
 
                         if let Some(requested) = self.requested.as_ref() {
                             if *requested != piece_idx as usize {
+                                // Mismatched piece, drop the peer.
                                 println!("Received data for piece {}, but requested piece {}.", piece_idx, requested);
-                                continue;
+                                break;
                             }
                         }
                         else {
-                            continue;
+                            // Unsolicited data, drop the peer just in case.
+                            println!("Peer sent data for piece {}, but a piece wasn't requested.", piece_idx);
+                            break;
                         }
 
-                        let received_bytes = data_slice.len();
-                        let mut piece_data = data_slice.to_vec();
-                        self.piece_data.append(&mut piece_data);
-
                         if let Some(piece) = self.torrent_info.torrent_pieces.write().await.get_mut(piece_idx as usize) {
-                            piece.add_received_bytes(received_bytes);
+                            let buf = data_slice.to_vec();
 
-                            if self.piece_data.len() >= piece.piece_len() {
-                                let (mut start_file, mut start_position) = piece.get_offsets();
+                            if piece.add_received_bytes(buf) {
+                                if piece.check_piece() {
+                                    let (mut start_file, mut start_position) = piece.get_offsets();
 
-                                if utils::check_piece(self.torrent_info.clone(), piece_idx as usize, &self.piece_data).await {
                                     piece.set_finished(true);
+                                    piece.set_requested(false);
+                                    utils::write_piece(self.torrent_info.clone(), piece.piece_data(), &mut start_file, &mut start_position).await;
 
-                                    utils::write_piece(self.torrent_info.clone(), &self.piece_data, &mut start_file, &mut start_position).await;
                                     println!("Piece {} finished.", piece_idx);
                                 }
                                 else {
-                                    println!("Piece {} finished, but hash didn't match.", piece_idx);
+                                    piece.reset_piece();
+                                    println!("Piece {} was completed, but the hash didn't match.", piece_idx);
                                 }
-
-                                self.requested = None;
-                                self.piece_data = Vec::with_capacity(self.torrent_info.piece_length);
                             }
                         }
 
@@ -299,14 +332,12 @@ impl Peer for TcpPeer {
 
             if !self.status.client_choked && !self.waiting_for_response {
                 if self.requested.is_none() {
-                    let mut missing_pieces = self.torrent_info.pieces_missing.write().await;
+                    if !self.torrent_info.get_missing_pieces_count().await > 0 {
+                        let idx = self.torrent_info.get_unfinished_piece_idx().await;
 
-                    if !missing_pieces.is_empty() {
-                        let idx = rand::thread_rng().gen_range(0..missing_pieces.len());
-                        let piece_idx = missing_pieces[idx];
-
-                        if self.bitfield_peer.is_piece_available(piece_idx as u32) {
-                            self.requested = Some(missing_pieces.remove(idx));
+                        if self.bitfield_peer.is_piece_available(idx as u32) {
+                            self.requested = Some(idx);
+                            self.torrent_info.request_piece(idx).await;
                         }
                     }
                     else {
@@ -365,46 +396,13 @@ impl Peer for TcpPeer {
 
             tokio::task::yield_now().await;
         }
+
+        // If a piece was requested by this peer, release it before dropping the connection
+        // so another peer can complete it.
+        if let Some(piece) = self.requested {
+            self.torrent_info.torrent_pieces.write().await[piece].set_requested(false);
+        }
         
         println!("Disconnecting from peer {}", self.address);
-    }
-
-    async fn connect(&mut self) -> bool {
-        let handshake = self.get_handshake();
-        self.stream = TcpStream::connect(&self.address).await.ok();
-
-        if let Some(stream) = self.stream.as_mut() {
-            if stream.write_all(&handshake).await.is_err() {
-                return false;
-            }
-        }
-        else {
-            return false;
-        }
-
-        loop {
-            if let Some(stream) = self.stream.as_mut() {
-                if let Ok(bytes) = stream.peek(&mut [0; 68]).await {
-                    if bytes >= 68 {
-                        let mut buffer = vec![0; 68];
-                        
-                        if stream.read_exact(&mut buffer).await.is_ok() {
-                            let mut data = Vec::new();
-                            let mut bitfield = self.torrent_info.bitfield_client.read().await.as_bytes();
-                            let message_length = bitfield.len() as u32 + 1;
-
-                            data.append(&mut message_length.to_be_bytes().to_vec());
-                            data.push(5);
-                            data.append(&mut bitfield);
-
-                            return self.send_peer_message(Message::Bitfield(data)).await;
-                        }
-                    }
-                    else {
-                        tokio::task::yield_now().await;
-                    }
-                }
-            }
-        }
     }
 }

@@ -7,6 +7,3 @@ members = [
 
 [profile.dev.package.sha1]
 opt-level = 3
-
-[profile.release]
-lto = true

@@ -7,18 +7,6 @@ use tokio::io::{AsyncSeekExt, AsyncWriteExt, SeekFrom};
 use crate::engine::TorrentInfo;
 use crate::engine::piece::Piece;
 
-pub async fn check_piece(info: Arc<TorrentInfo>, idx: usize, data: &[u8]) -> bool {
-    let hash = Sha1::from(data).digest().bytes();
-
-    if hash == info.pieces_hashes[idx].as_slice() {
-        info.bitfield_client.write().await.piece_finished(idx as u32);
-        true
-    }
-    else {
-        false
-    }
-}
-
 pub async fn read_piece(info: Arc<TorrentInfo>, start_file: usize, start_position: usize) -> Vec<u8> {
     let piece_length = info.piece_length;
     let last_file = start_file == info.torrent_files.read().await.len() - 1;
@@ -62,8 +50,8 @@ pub async fn write_piece(info: Arc<TorrentInfo>, data: &[u8], file_idx: &mut usi
 }
 
 pub async fn check_torrent(info: &mut Arc<TorrentInfo>) {
-    let total_hashes = info.pieces_hashes.len();
-    let mut new_hashes: Vec<[u8; 20]> = Vec::with_capacity(total_hashes);
+    let hashes = info.data.info().pieces().to_vec();
+    let total_hashes = hashes.len();
 
     let mut current_file = 0;
     let mut current_piece = 0;
@@ -75,7 +63,7 @@ pub async fn check_torrent(info: &mut Arc<TorrentInfo>) {
         let filesize = info.torrent_files.write().await[current_file].file_mut().metadata().await.unwrap().len() as usize;
         
         let piece = read_piece(info.clone(), current_file, current_file_offset).await;
-
+        let piece_hash = hashes[current_piece].as_slice();
         let end_position = current_file_offset as usize + piece.len();
 
         match end_position.cmp(&filesize) {
@@ -92,38 +80,14 @@ pub async fn check_torrent(info: &mut Arc<TorrentInfo>) {
             std::cmp::Ordering::Less => current_file_offset += piece.len()
         }
 
-        let hash = Sha1::from(&piece).digest().bytes();
-        let finished = hash == info.pieces_hashes[current_piece].as_slice();
-        let piece = Piece::new(piece.len(), start_file, start_position, finished);
+        let finished = Sha1::from(&piece).digest().bytes() == piece_hash;
+        let piece = Piece::new(piece.len(), piece_hash.to_owned(), start_file, start_position, finished);
 
         if finished {
             info.bitfield_client.write().await.piece_finished(current_piece as u32);
         }
         
         current_piece += 1;
-
-        new_hashes.push(hash);
         info.torrent_pieces.write().await.push(piece);
     }
-}
-
-pub async fn update_missing_pieces(info: &mut Arc<TorrentInfo>) {
-    let mut result = Vec::with_capacity(info.pieces_hashes.len());
-    let mut piece_idx = 0;
-
-    for byte in info.bitfield_client.read().await.as_bytes().iter() {
-        for bit in (0..8).rev() {
-            if (*byte >> bit) & 1 == 0 {
-                result.push(piece_idx);
-            }
-
-            piece_idx += 1;
-
-            if piece_idx == info.pieces_hashes.len() {
-                break;
-            }
-        }
-    }
-
-    *info.pieces_missing.write().await = result;
 }

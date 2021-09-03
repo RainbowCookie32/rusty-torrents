@@ -1,22 +1,29 @@
 pub struct Piece {
     piece_len: usize,
+    piece_data: Vec<u8>,
+    piece_hash: Vec<u8>,
 
     start_file: usize,
     start_position: usize,
 
     finished: bool,
-    last_received_byte: usize
+    requested: bool
 }
 
 impl Piece {
-    pub fn new(piece_len: usize, start_file: usize, start_position: usize, finished: bool) -> Piece {
+    pub fn new(piece_len: usize, piece_hash: Vec<u8>, start_file: usize, start_position: usize, finished: bool) -> Piece {
+        let piece_data = Vec::with_capacity(piece_len);
+
         Piece {
             piece_len,
+            piece_data,
+            piece_hash,
+
             start_file,
             start_position,
 
             finished,
-            last_received_byte: 0
+            requested: false
         }
     }
 
@@ -25,14 +32,24 @@ impl Piece {
     }
 
     pub fn get_block_request(&self) -> (u32, u32) {
-        let potential_size = self.last_received_byte + 16384;
+        let potential_size = self.piece_data.len() + 16384;
 
         if potential_size > self.piece_len {
-            (self.last_received_byte as u32, (self.piece_len - self.last_received_byte) as u32)
+            (self.piece_data.len() as u32, (self.piece_len - self.piece_data.len()) as u32)
         }
         else {
-            (self.last_received_byte as u32, 16384)
+            (self.piece_data.len() as u32, 16384)
         }
+    }
+
+    pub fn check_piece(&self) -> bool {
+        sha1::Sha1::from(&self.piece_data).digest().bytes() == self.piece_hash.as_slice()
+    }
+
+    pub fn reset_piece(&mut self) {
+        self.finished = false;
+        self.requested = false;
+        self.piece_data = Vec::with_capacity(self.piece_len);
     }
 
     pub fn finished(&self) -> bool {
@@ -43,12 +60,22 @@ impl Piece {
         self.finished = finished;
     }
 
-    pub fn add_received_bytes(&mut self, len: usize) {
-        self.last_received_byte += len;
-        self.finished = self.last_received_byte >= self.piece_len;
+    pub fn requested(&self) -> bool {
+        self.requested
     }
 
-    pub fn piece_len(&self) -> usize {
-        self.piece_len
+    pub fn set_requested(&mut self, requested: bool) {
+        self.requested = requested;
+    }
+
+    pub fn add_received_bytes(&mut self, buf: Vec<u8>) -> bool {
+        let mut buf = buf;
+        
+        self.piece_data.append(&mut buf);
+        self.piece_data.len() >= self.piece_len
+    }
+
+    pub fn piece_data(&self) -> &[u8] {
+        self.piece_data.as_slice()
     }
 }
