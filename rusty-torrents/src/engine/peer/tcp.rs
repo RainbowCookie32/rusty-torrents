@@ -178,6 +178,10 @@ impl TcpPeer {
 #[async_trait]
 impl Peer for TcpPeer {
     async fn connect(&mut self) -> bool {
+        if self.stream.is_some() {
+            return true;
+        }
+
         let handshake = self.get_handshake();
         self.stream = TcpStream::connect(&self.address).await.ok();
 
