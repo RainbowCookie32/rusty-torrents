@@ -69,12 +69,11 @@ impl TorrentInfo {
 
     pub fn get_missing_pieces_count(&self) -> Option<usize> {
         if let Ok(pieces) = self.torrent_pieces.try_read() {
-            Some(pieces.iter().filter(|p| !p.finished()).count())
+            Some(pieces.iter().filter(|p| !p.requested() && !p.finished()).count())
         }
         else {
             None
         }
-        
     }
 
     /// Get a reference to the torrent info's data.
