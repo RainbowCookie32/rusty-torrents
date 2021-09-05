@@ -3,8 +3,15 @@ use std::net::SocketAddrV4;
 
 use bytes::Buf;
 
+#[cfg(target_os = "linux")]
 use tokio::net::TcpStream;
+#[cfg(target_os = "linux")]
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+#[cfg(target_os = "windows")]
+use async_net::TcpStream;
+#[cfg(target_os = "windows")]
+use futures::io::{AsyncReadExt, AsyncWriteExt};
 
 use async_trait::async_trait;
 
