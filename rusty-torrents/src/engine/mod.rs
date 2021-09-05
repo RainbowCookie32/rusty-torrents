@@ -163,12 +163,7 @@ impl Engine {
                 if peer.connect().await {
                     loop {
                         if !peer.handle_peer_messages().await {
-                            let piece = peer.get_assigned_piece();
-                            
-                            if let Some(piece) = piece {
-                                info.release_piece(piece).await;
-                            }
-
+                            peer.release_requested_piece().await;
                             break;
                         }
 
@@ -190,7 +185,15 @@ impl Engine {
                                         info.piece_requested(piece).await;
                                     }
                                 }
+                                else {
+                                    peer.send_keep_alive().await;
+                                }
                             }
+                        }
+
+                        if !peer.is_responsive() {
+                            peer.release_requested_piece().await;
+                            break;
                         }
 
                         tokio::task::yield_now().await;

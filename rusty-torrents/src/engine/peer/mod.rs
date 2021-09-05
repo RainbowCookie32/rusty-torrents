@@ -6,9 +6,12 @@ use async_trait::async_trait;
 #[async_trait]
 pub trait Peer {
     async fn connect(&mut self) -> bool;
+    async fn send_keep_alive(&mut self) -> bool;
+    async fn release_requested_piece(&mut self);
     async fn handle_peer_messages(&mut self) -> bool;
     async fn request_piece(&mut self, piece: usize) -> bool;
 
+    fn is_responsive(&self) -> bool;
     fn should_request(&self) -> bool;
     fn get_assigned_piece(&self) -> Option<usize>;
 }

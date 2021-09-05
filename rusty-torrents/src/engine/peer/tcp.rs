@@ -1,5 +1,6 @@
 use std::sync::Arc;
 use std::net::SocketAddrV4;
+use std::time::{Duration, Instant};
 
 use bytes::Buf;
 
@@ -29,7 +30,9 @@ pub struct TcpPeer {
     bitfield_peer: Bitfield,
     
     requested: Option<usize>,
-    waiting_for_response: bool
+    
+    waiting_for_response: bool,
+    time_since_last_message: Instant
 }
 
 impl TcpPeer {
@@ -46,7 +49,9 @@ impl TcpPeer {
             bitfield_peer: Bitfield::empty(pieces),
 
             requested: None,
-            waiting_for_response: false
+            
+            waiting_for_response: false,
+            time_since_last_message: Instant::now()
         }
     }
 
@@ -81,6 +86,8 @@ impl TcpPeer {
                     let length = (length_buf.as_slice().get_u32() + 4) as usize;
                     let mut message_buffer = vec![0; length as usize];
 
+                    self.time_since_last_message = Instant::now();
+
                     if let Ok(bytes) = stream.peek(&mut message_buffer).await {
                         if bytes == length && stream.read_exact(&mut message_buffer).await.is_ok() {
                             return Message::from_data(message_buffer);
@@ -95,7 +102,18 @@ impl TcpPeer {
 
     async fn send_peer_message(&mut self, message: Message) -> bool {
         match message {
-            Message::KeepAlive => {}
+            Message::KeepAlive => {
+                if let Some(stream) = self.stream.as_mut() {
+                    let message = [0, 0, 0, 0, 0];
+
+                    if stream.write_all(&message).await.is_err() {
+                        return false;
+                    }
+                    else {
+                        self.status.peer_choked = true;
+                    }
+                }
+            }
 
             Message::Choke => {
                 if let Some(stream) = self.stream.as_mut() {
@@ -217,6 +235,16 @@ impl Peer for TcpPeer {
                     }
                 }
             }
+        }
+    }
+
+    async fn send_keep_alive(&mut self) -> bool {
+        self.send_peer_message(Message::KeepAlive).await
+    }
+
+    async fn release_requested_piece(&mut self) {
+        if let Some(piece) = self.requested {
+            self.torrent_info.release_piece(piece).await
         }
     }
 
@@ -396,6 +424,10 @@ impl Peer for TcpPeer {
         else {
             false
         }
+    }
+
+    fn is_responsive(&self) -> bool {
+        self.time_since_last_message.elapsed() < Duration::from_secs(10)
     }
 
     fn should_request(&self) -> bool {
