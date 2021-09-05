@@ -205,7 +205,7 @@ impl App {
         let chunks = Layout::default()
             .constraints([
                 Constraint::Percentage(70),
-                Constraint::Percentage(30)
+                Constraint::Max(30)
             ].as_ref())
             .split(area)
         ;

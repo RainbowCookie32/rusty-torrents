@@ -299,26 +299,38 @@ impl Peer for TcpPeer {
                         return false;
                     }
 
-                    if let Some(piece) = self.torrent_info.torrent_pieces.write().await.get_mut(piece_idx as usize) {
-                        let buf = data_slice.to_vec();
+                    let (mut file_idx, mut file_position) = (0, 0);
+                    let mut piece_data = None;
 
-                        if piece.add_received_bytes(buf) {
-                            if piece.check_piece() {
-                                let (mut start_file, mut start_position) = piece.get_offsets();
+                    {
+                        let mut lock = self.torrent_info.torrent_pieces.write().await;
 
-                                piece.set_finished(true);
-                                piece.set_requested(false);
-                                utils::write_piece(self.torrent_info.clone(), piece.piece_data(), &mut start_file, &mut start_position).await;
+                        if let Some(piece) = lock.get_mut(piece_idx as usize) {
+                            let buf = data_slice.to_vec();
+    
+                            if piece.add_received_bytes(buf) {
+                                if piece.check_piece() {
+                                    file_idx = piece.get_offsets().0;
+                                    file_position = piece.get_offsets().1;
+                                    
+                                    piece.set_finished(true);
+                                    piece.set_requested(false);
+                                    piece_data = Some(piece.piece_data().to_owned());
+                                }
+                                else {
+                                    piece.reset_piece();
+                                }
+    
+                                self.requested = None;
                             }
-                            else {
-                                piece.reset_piece();
-                            }
-
+                        }
+                        else {
                             self.requested = None;
                         }
                     }
-                    else {
-                        self.requested = None;
+
+                    if let Some(piece_data) = piece_data {
+                        utils::write_piece(self.torrent_info.clone(), &piece_data, &mut file_idx, &mut file_position).await;
                     }
 
                     self.waiting_for_response = false;
