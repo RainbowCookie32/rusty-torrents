@@ -47,9 +47,23 @@ impl TorrentInfo {
         self.torrent_pieces.read().await.len()
     }
 
-    pub async fn get_missing_pieces_count(&self) -> usize {
-        let pieces = self.torrent_pieces.read().await;
-        pieces.iter().filter(|p| !p.finished()).count()
+    pub fn get_missing_pieces_count(&self) -> Option<usize> {
+        if let Ok(pieces) = self.torrent_pieces.try_read() {
+            Some(pieces.iter().filter(|p| !p.finished()).count())
+        }
+        else {
+            None
+        }
+        
+    }
+
+    /// Get a reference to the torrent info's data.
+    pub fn data(&self) -> &ParsedTorrent {
+        &self.data
+    }
+
+    pub fn torrent_pieces(&self) -> Arc<RwLock<Vec<Piece>>> {
+        self.torrent_pieces.clone()
     }
 }
 
@@ -79,8 +93,6 @@ impl Engine {
         let torrent_files = Engine::build_file_list(data.info().files(), piece_length).await;
         let torrent_files = Arc::new(RwLock::new(torrent_files));
 
-        println!("Torrent name: {}", data.get_name());
-
         let pieces = data.info().pieces().len();
 
         let torrent_info = TorrentInfo {
@@ -93,19 +105,9 @@ impl Engine {
             bitfield_client: Arc::new(RwLock::new(Bitfield::empty(pieces)))
         };
 
-        let check_time = std::time::Instant::now();
         let mut torrent_info = Arc::new(torrent_info);
 
-        println!("Checking loaded torrent...");
         utils::check_torrent(&mut torrent_info).await;
-
-        {
-            let pieces = torrent_info.torrent_pieces.read().await;
-            let total_pieces = pieces.len();
-            let missing_pieces = pieces.iter().filter(|p| !p.finished()).count();
-    
-            println!("Checked torrent in {}s. {}/{} pieces downloaded.", check_time.elapsed().as_secs(), total_pieces - missing_pieces, total_pieces);
-        }
 
         let trackers = tracker::create_trackers(trackers_list, torrent_info.clone());
 
@@ -115,7 +117,11 @@ impl Engine {
         }
     }
 
-    pub async fn start_torrent(mut self) {
+    pub fn info(&self) -> Arc<TorrentInfo> {
+        self.torrent_info.clone()
+    }
+
+    pub async fn start_torrent(&mut self) {
         let mut peers: Vec<Box<dyn Peer+Send>> = Vec::new();
 
         for tracker in self.trackers.iter_mut() {
@@ -126,10 +132,6 @@ impl Engine {
                 },
                 TrackerKind::Udp => unimplemented!(),
             }
-        }
-
-        if peers.is_empty() {
-            println!("No peers received from trackers, exiting...");
         }
 
         for peer in peers {
@@ -161,11 +163,13 @@ impl Engine {
                                     info.piece_requested(piece).await;
                                 }
                             }
-                            else {
-                                let piece = info.get_unfinished_piece_idx().await;
+                            else if let Some(missing_pieces) = info.get_missing_pieces_count() {
+                                if missing_pieces > 0 {
+                                    let piece = info.get_unfinished_piece_idx().await;
 
-                                if info.get_missing_pieces_count().await > 0 && peer.request_piece(piece).await {
-                                    info.piece_requested(piece).await;
+                                    if peer.request_piece(piece).await {
+                                        info.piece_requested(piece).await;
+                                    }
                                 }
                             }
                         }
@@ -174,10 +178,6 @@ impl Engine {
                     }
                 }
             });
-        }
-
-        loop {
-            std::thread::sleep(std::time::Duration::from_secs(1));
         }
     }
 

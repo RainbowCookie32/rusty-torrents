@@ -16,6 +16,9 @@ reqwest = "0.11.3"
 urlencoding = "2.1.0"
 async-trait = "0.1.50"
 
+crossterm = "0.21.0"
+tui = { version = "0.16", default-features = false, features = ['crossterm'] }
+
 rusty-parser = { path = "../rusty-parser" }
 
 tokio = { version = "1.6.0", features = ["rt", "rt-multi-thread", "macros", "fs", "net", "sync"] }

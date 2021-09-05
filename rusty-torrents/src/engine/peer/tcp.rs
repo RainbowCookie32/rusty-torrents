@@ -94,8 +94,7 @@ impl TcpPeer {
                 if let Some(stream) = self.stream.as_mut() {
                     let message = [0, 0, 0, 1, 0];
 
-                    if let Err(e) = stream.write_all(&message).await {
-                        println!("Error sending Choke message to peer {}. {}", self.address, e.to_string());
+                    if stream.write_all(&message).await.is_err() {
                         return false;
                     }
                     else {
@@ -107,8 +106,7 @@ impl TcpPeer {
                 if let Some(stream) = self.stream.as_mut() {
                     let message = [0, 0, 0, 1, 1];
 
-                    if let Err(e) = stream.write_all(&message).await {
-                        println!("Error sending Unchoke message to peer {}. {}", self.address, e.to_string());
+                    if stream.write_all(&message).await.is_err() {
                         return false;
                     }
                     else {
@@ -120,8 +118,7 @@ impl TcpPeer {
                 if let Some(stream) = self.stream.as_mut() {
                     let message = [0, 0, 0, 1, 2];
 
-                    if let Err(e) = stream.write_all(&message).await {
-                        println!("Error sending Interested message to peer {}. {}", self.address, e.to_string());
+                    if stream.write_all(&message).await.is_err() {
                         return false;
                     }
                     else {
@@ -133,8 +130,7 @@ impl TcpPeer {
                 if let Some(stream) = self.stream.as_mut() {
                     let message = [0, 0, 0, 1, 3];
 
-                    if let Err(e) = stream.write_all(&message).await {
-                        println!("Error sending Not Interested message to peer {}. {}", self.address, e.to_string());
+                    if stream.write_all(&message).await.is_err() {
                         return false;
                     }
                     else {
@@ -146,24 +142,21 @@ impl TcpPeer {
             Message::Have(_data) => {}
             Message::Bitfield(data) => {
                 if let Some(stream) = self.stream.as_mut() {
-                    if let Err(e) = stream.write_all(&data).await {
-                        println!("Error sending Bitfield message to peer {}. {}", self.address, e.to_string());
+                    if stream.write_all(&data).await.is_err() {
                         return false;
                     }
                 }
             }
             Message::Request(data) => {
                 if let Some(stream) = self.stream.as_mut() {
-                    if let Err(e) = stream.write_all(&data).await {
-                        println!("Error sending Request message to peer {}. {}", self.address, e.to_string());
+                    if stream.write_all(&data).await.is_err() {
                         return false;
                     }
                 }
             }
             Message::Piece(data) => {
                 if let Some(stream) = self.stream.as_mut() {
-                    if let Err(e) = stream.write_all(&data).await {
-                        println!("Error sending Piece message to peer {}. {}", self.address, e.to_string());
+                    if stream.write_all(&data).await.is_err() {
                         return false;
                     }
                 }
@@ -291,13 +284,11 @@ impl Peer for TcpPeer {
                     if let Some(requested) = self.requested.as_ref() {
                         if *requested != piece_idx as usize {
                             // Mismatched piece, drop the peer.
-                            println!("Received data for piece {}, but requested piece {}.", piece_idx, requested);
                             return false;
                         }
                     }
                     else {
                         // Unsolicited data, drop the peer just in case.
-                        println!("Peer sent data for piece {}, but a piece wasn't requested.", piece_idx);
                         return false;
                     }
 
@@ -311,12 +302,9 @@ impl Peer for TcpPeer {
                                 piece.set_finished(true);
                                 piece.set_requested(false);
                                 utils::write_piece(self.torrent_info.clone(), piece.piece_data(), &mut start_file, &mut start_position).await;
-
-                                println!("Piece {} finished.", piece_idx);
                             }
                             else {
                                 piece.reset_piece();
-                                println!("Piece {} was completed, but the hash didn't match.", piece_idx);
                             }
 
                             self.requested = None;

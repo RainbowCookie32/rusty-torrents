@@ -60,8 +60,6 @@ impl TcpTracker {
             }
         }
 
-        println!("Attempting announce to {}", self.tracker_url);
-
         let event = match event {
             TrackerEvent::Started => String::from("&event=started"),
             TrackerEvent::Stopped => String::from("&event=stopped"),
@@ -76,7 +74,7 @@ impl TcpTracker {
         let total_size = piece_size * self.info.torrent_pieces.read().await.len();
 
         // This doesn't consider a smaller final piece, but I don't think it *really* matters.
-        let missing = self.info.piece_length * self.info.get_missing_pieces_count().await;
+        let missing = self.info.piece_length * self.info.get_missing_pieces_count().unwrap_or(self.info.get_pieces_count().await);
         let downloaded = total_size - missing;
 
         let mut tracker_url = format!(
@@ -88,7 +86,7 @@ impl TcpTracker {
             tracker_url.push_str(&event);
         }
         
-        for attempt in 0..3 {
+        for _ in 0..3 {
             let response = reqwest::get(&tracker_url).await;
 
             if let Ok(response) = response {
@@ -111,39 +109,13 @@ impl TcpTracker {
 
                     self.peers_list = peers_list;
                 }
-                else if let Some(reason) = entries.get("failure reason") {
-                    let reason = reason.get_string();
-
-                    if !reason.is_empty() {
-                        println!("Failed to announce on tracker: {}", reason);
-                    }
-                }
 
                 if let Some(interval) = entries.get("interval") {
                     self.announce_interval = Duration::from_secs(interval.get_int() as u64);
                 }
 
                 self.announced = true;
-                println!("Announced successfully at {}. Got {} peers.", self.tracker_url, self.peers_list.len());
-
                 break;
-            }
-            else if let Err(e) = response {
-                if let Some(code) = e.status() {
-                    println!(
-                        "Error sending message to tracker {} (code {}). Retrying... ({}/5)",
-                        self.tracker_url,
-                        code,
-                        attempt + 1
-                    );
-                }
-                else {
-                    println!(
-                        "Error sending message to tracker {}. Retrying... ({}/5)",
-                        self.tracker_url,
-                        attempt + 1
-                    );
-                }
             }
         }
     }

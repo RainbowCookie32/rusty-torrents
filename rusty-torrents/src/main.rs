@@ -1,3 +1,4 @@
+mod ui;
 mod engine;
 
 use clap::{Arg, App};
@@ -19,9 +20,18 @@ async fn main() {
         .get_matches()
     ;
 
+    
     let torrent_path = matches.value_of("path").expect("No value for torrent provided");
     let torrent_data = std::fs::read(torrent_path).expect("Couldn't open torrent file");
 
     let torrent_engine = engine::Engine::init(torrent_data).await;
-    torrent_engine.start_torrent().await;
+    let torrent_info = torrent_engine.info();
+
+    tokio::spawn(async move {
+        let mut torrent_engine = torrent_engine;
+        torrent_engine.start_torrent().await;
+    });
+
+    let mut app = ui::App::new(torrent_info);
+    app.draw();
 }

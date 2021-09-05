@@ -27,6 +27,19 @@ impl Piece {
         }
     }
 
+    pub fn get_len(&self) -> usize {
+        self.piece_len
+    }
+
+    pub fn get_downloaded(&self) -> usize {
+        if !self.finished {
+            self.piece_data.len()
+        }
+        else {
+            self.piece_len
+        }
+    }
+
     pub fn get_offsets(&self) -> (usize, usize) {
         (self.start_file, self.start_position)
     }
