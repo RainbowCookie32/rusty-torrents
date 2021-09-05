@@ -11,14 +11,13 @@ dirs = "3.0.2"
 rand = "0.8.4"
 sha1 = "0.6.0"
 clap = "2.33.3"
-bytes = "1.0.1"
-reqwest = "0.11.3"
+bytes = "1.1.0"
 urlencoding = "2.1.0"
-async-trait = "0.1.50"
-
-crossterm = "0.21.0"
-tui = { version = "0.16", default-features = false, features = ['crossterm'] }
+async-trait = "0.1.51"
 
 rusty-parser = { path = "../rusty-parser" }
 
-tokio = { version = "1.6.0", features = ["rt", "rt-multi-thread", "macros", "fs", "net", "sync"] }
+crossterm = "0.21.0"
+tui = { version = "0.16", default-features = false, features = ['crossterm'] }
+reqwest = { version = "0.11.4", default-features = false, features = ["tokio-native-tls"] }
+tokio = { version = "1.11.0", default-features = false, features = ["rt", "rt-multi-thread", "macros", "fs", "net", "sync"] }
