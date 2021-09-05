@@ -310,6 +310,9 @@ impl Peer for TcpPeer {
                             self.requested = None;
                         }
                     }
+                    else {
+                        self.requested = None;
+                    }
 
                     self.waiting_for_response = false;
                 }
