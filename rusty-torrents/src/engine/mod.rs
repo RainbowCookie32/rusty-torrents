@@ -38,9 +38,29 @@ impl TorrentInfo {
         }
     }
 
+    // Always check that there are unfinished pieces before calling this!
     pub async fn get_unfinished_piece_idx(&self) -> usize {
+        if let Some(pieces) = self.get_missing_pieces_count() {
+            assert!(pieces > 0)
+        }
+        else {
+            return 0;
+        }
+
+        let mut idx: usize;
         let pieces = self.torrent_pieces.read().await;
-        rand::thread_rng().gen_range(0..pieces.iter().filter(|p| !p.finished() && !p.requested()).count())
+
+        let mut rng = rand::thread_rng();
+        
+        loop {
+            idx = rng.gen_range(0..pieces.len());
+            
+            if !&pieces[idx].requested() && !&pieces[idx].finished() {
+                break;
+            }
+        }
+        
+        idx
     }
 
     pub async fn get_pieces_count(&self) -> usize {
