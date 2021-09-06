@@ -25,7 +25,7 @@ pub struct TcpTracker {
 impl TcpTracker {
     pub fn new(client_id: String, tracker_url: String, info: Arc<TorrentInfo>) -> TcpTracker {
         if tracker_url.starts_with("udp:") {
-            panic!("Got an udp tracker url on  TcpTracker");
+            panic!("Got an udp tracker url on TcpTracker");
         }
 
         TcpTracker {
@@ -52,10 +52,8 @@ impl TcpTracker {
     }
 
     pub async fn send_message(&mut self, event: TrackerEvent) {
-        let should_reannounce = self.time_since_last_message.elapsed() < self.announce_interval;
-
         if let TrackerEvent::PeriodicRequest = event {
-            if self.announced && !should_reannounce {
+            if self.announced && self.time_since_last_message.elapsed() < self.announce_interval {
                 return;
             }
         }
@@ -77,17 +75,13 @@ impl TcpTracker {
         let missing = self.info.piece_length * self.info.get_missing_pieces_count().unwrap_or(self.info.get_pieces_count().await);
         let downloaded = total_size - missing;
 
-        let mut tracker_url = format!(
-            "{}?info_hash={}&peer_id={}&port=6881&uploaded={}&downloaded={}&left={}&compact=1",
-            self.tracker_url, info_hash, self.client_id, 0, downloaded, missing
+        let tracker_query = format!(
+            "{}?info_hash={}&peer_id={}&port=6881&uploaded={}&downloaded={}&left={}&compact=1{}",
+            self.tracker_url, info_hash, self.client_id, 0, downloaded, missing, event
         );
-
-        if !event.is_empty() {
-            tracker_url.push_str(&event);
-        }
         
         for _ in 0..3 {
-            let response = reqwest::get(&tracker_url).await;
+            let response = reqwest::get(&tracker_query).await;
 
             if let Ok(response) = response {
                 let body: Vec<u8> = response.bytes().await.unwrap_or_default().to_vec();
@@ -96,18 +90,18 @@ impl TcpTracker {
                 let entries = response_data.get_dictionary();
 
                 if let Some(peers) = entries.get("peers") {
-                    let mut peers_list = Vec::new();
                     let peers_bytes = peers.get_string_bytes();
                     let mut peers_bytes_slice = peers_bytes.as_slice();
 
                     for _ in (0..peers_bytes.len()).step_by(6) {
                         let ip = peers_bytes_slice.get_u32();
                         let port = peers_bytes_slice.get_u16();
+                        let socket_addr = SocketAddrV4::new(Ipv4Addr::from(ip), port);
 
-                        peers_list.push(SocketAddrV4::new(Ipv4Addr::from(ip), port));
+                        if !self.peers_list.contains(&socket_addr) {
+                            self.peers_list.push(socket_addr);
+                        }
                     }
-
-                    self.peers_list = peers_list;
                 }
 
                 if let Some(interval) = entries.get("interval") {
