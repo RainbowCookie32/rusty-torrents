@@ -30,8 +30,12 @@ pub struct TcpPeer {
     bitfield_peer: Bitfield,
     
     requested: Option<usize>,
-    
+    requested_size: usize,
     waiting_for_response: bool,
+
+    received_data: usize,
+    received_data_timer: Instant,
+
     time_since_last_message: Instant
 }
 
@@ -49,8 +53,12 @@ impl TcpPeer {
             bitfield_peer: Bitfield::empty(pieces),
 
             requested: None,
-            
+            requested_size: 0,
             waiting_for_response: false,
+
+            received_data: 0,
+            received_data_timer: Instant::now(),
+
             time_since_last_message: Instant::now()
         }
     }
@@ -335,6 +343,8 @@ impl Peer for TcpPeer {
 
                         if let Some(piece) = lock.get_mut(piece_idx as usize) {
                             let buf = data_slice.to_vec();
+
+                            self.received_data += buf.len();
     
                             if piece.add_received_bytes(buf) {
                                 if piece.check_piece() {
@@ -412,8 +422,13 @@ impl Peer for TcpPeer {
             message_data.append(&mut block_length.to_be_bytes().to_vec());
 
             if self.send_peer_message(Message::Request(message_data)).await {
-                self.waiting_for_response = true;
                 self.requested = Some(piece_idx as usize);
+                self.requested_size = block_length as usize;
+
+                self.waiting_for_response = true;
+
+                self.received_data = 0;
+                self.received_data_timer = Instant::now();
 
                 true
             }
@@ -436,5 +451,9 @@ impl Peer for TcpPeer {
 
     fn get_assigned_piece(&self) -> Option<usize> {
         self.requested
+    }
+
+    fn is_potato(&self) -> bool {
+        self.received_data < (self.requested_size / 2) && self.received_data_timer.elapsed() > Duration::from_secs(5)
     }
 }

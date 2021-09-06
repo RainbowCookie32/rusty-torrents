@@ -191,7 +191,7 @@ impl Engine {
                             }
                         }
 
-                        if !peer.is_responsive() {
+                        if !peer.is_responsive() || peer.is_potato() {
                             peer.release_requested_piece().await;
                             break;
                         }
