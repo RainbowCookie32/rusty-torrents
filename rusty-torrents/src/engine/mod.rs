@@ -186,7 +186,7 @@ impl Engine {
                                     }
                                 }
                                 else {
-                                    peer.send_keep_alive().await;
+                                    // peer.send_keep_alive().await;
                                 }
                             }
                         }
