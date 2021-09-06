@@ -12,7 +12,7 @@ pub struct Piece {
 
 impl Piece {
     pub fn new(piece_len: usize, piece_hash: Vec<u8>, start_file: usize, start_position: usize, finished: bool) -> Piece {
-        let piece_data = Vec::with_capacity(piece_len);
+        let piece_data = Vec::new();
 
         Piece {
             piece_len,
@@ -62,7 +62,7 @@ impl Piece {
     pub fn reset_piece(&mut self) {
         self.finished = false;
         self.requested = false;
-        self.piece_data = Vec::with_capacity(self.piece_len);
+        self.piece_data = Vec::new();
     }
 
     pub fn finished(&self) -> bool {
@@ -70,6 +70,10 @@ impl Piece {
     }
 
     pub fn set_finished(&mut self, finished: bool) {
+        if finished {
+            self.piece_data = Vec::new();
+        }
+
         self.finished = finished;
     }
 

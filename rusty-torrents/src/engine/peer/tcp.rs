@@ -350,10 +350,10 @@ impl Peer for TcpPeer {
                                 if piece.check_piece() {
                                     file_idx = piece.get_offsets().0;
                                     file_position = piece.get_offsets().1;
+                                    piece_data = Some(piece.piece_data().to_owned());
                                     
                                     piece.set_finished(true);
                                     piece.set_requested(false);
-                                    piece_data = Some(piece.piece_data().to_owned());
                                 }
                                 else {
                                     piece.reset_piece();
