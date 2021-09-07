@@ -1,4 +1,4 @@
-mod peer;
+pub mod peer;
 mod file;
 mod piece;
 mod utils;
@@ -12,7 +12,7 @@ use rusty_parser::ParsedTorrent;
 
 use file::File;
 use piece::Piece;
-use peer::{Bitfield, Peer};
+use peer::{Bitfield, Peer, PeerInfo};
 use tracker::{TrackerKind, TrackerEvent};
 
 pub struct TorrentInfo {
@@ -21,6 +21,7 @@ pub struct TorrentInfo {
 
     torrent_files: Arc<RwLock<Vec<File>>>,
     torrent_pieces: Arc<RwLock<Vec<Piece>>>,
+    torrent_peers: Arc<RwLock<Vec<Arc<RwLock<PeerInfo>>>>>,
 
     bitfield_client: Arc<RwLock<Bitfield>>
 }
@@ -84,6 +85,10 @@ impl TorrentInfo {
     pub fn torrent_pieces(&self) -> Arc<RwLock<Vec<Piece>>> {
         self.torrent_pieces.clone()
     }
+
+    pub fn torrent_peers(&self) -> Arc<RwLock<Vec<Arc<RwLock<PeerInfo>>>>> {
+        self.torrent_peers.clone()
+    }
 }
 
 pub struct Engine {
@@ -120,6 +125,7 @@ impl Engine {
 
             torrent_files,
             torrent_pieces: Arc::new(RwLock::new(Vec::new())),
+            torrent_peers: Arc::new(RwLock::new(Vec::new())),
 
             bitfield_client: Arc::new(RwLock::new(Bitfield::empty(pieces)))
         };
@@ -155,6 +161,9 @@ impl Engine {
 
         for peer in peers {
             let info = self.torrent_info.clone();
+            let peer_info = peer.get_peer_info();
+
+            info.torrent_peers.write().await.push(peer_info);
 
             tokio::task::spawn(async move {
                 let info = info;
@@ -163,7 +172,11 @@ impl Engine {
                 if peer.connect().await {
                     loop {
                         if !peer.handle_peer_messages().await {
+                            let info = peer.get_peer_info();
+
+                            info.write().await.set_active(false);
                             peer.release_requested_piece().await;
+
                             break;
                         }
 
@@ -192,7 +205,11 @@ impl Engine {
                         }
 
                         if !peer.is_responsive() || peer.is_potato() {
+                            let info = peer.get_peer_info();
+
+                            info.write().await.set_active(false);
                             peer.release_requested_piece().await;
+
                             break;
                         }
 
@@ -201,6 +218,25 @@ impl Engine {
                     }
                 }
             });
+        }
+
+        loop {
+            if let Ok(mut lock) = self.torrent_info.torrent_peers.try_write() {
+                let infos = lock.to_owned();
+
+                let clear: Vec<Arc<RwLock<PeerInfo>>> = infos.into_iter().filter(|i| {
+                    if let Ok(i) = i.try_read() {
+                        i.active()
+                    }
+                    else {
+                        true
+                    }
+                }).collect();
+
+                *lock = clear;
+            }
+
+            std::thread::sleep(std::time::Duration::from_millis(5));
         }
     }
 

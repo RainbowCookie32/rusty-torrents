@@ -3,6 +3,8 @@ use std::net::SocketAddrV4;
 use std::time::{Duration, Instant};
 
 use bytes::Buf;
+use tokio::sync::RwLock;
+use async_trait::async_trait;
 
 #[cfg(target_os = "linux")]
 use tokio::net::TcpStream;
@@ -14,17 +16,16 @@ use async_net::TcpStream;
 #[cfg(target_os = "windows")]
 use futures::io::{AsyncReadExt, AsyncWriteExt};
 
-use async_trait::async_trait;
-
 use crate::engine::utils;
 use crate::engine::TorrentInfo;
-use crate::engine::peer::{Bitfield, Peer, PeerStatus, Message};
+use crate::engine::peer::{Bitfield, Peer, PeerInfo, PeerStatus, Message};
 
 pub struct TcpPeer {
     address: SocketAddrV4,
     stream: Option<TcpStream>,
 
     status: PeerStatus,
+    peer_info: Arc<RwLock<PeerInfo>>,
     torrent_info: Arc<TorrentInfo>,
 
     bitfield_peer: Bitfield,
@@ -40,7 +41,7 @@ pub struct TcpPeer {
 }
 
 impl TcpPeer {
-    pub async fn new(address: SocketAddrV4, torrent_info: Arc<TorrentInfo>) -> TcpPeer {
+    pub async fn new(address: SocketAddrV4, peer_info: Arc<RwLock<PeerInfo>>, torrent_info: Arc<TorrentInfo>) -> TcpPeer {
         let pieces = torrent_info.get_pieces_count().await;
 
         TcpPeer {
@@ -48,6 +49,7 @@ impl TcpPeer {
             stream: None,
 
             status: PeerStatus::new(),
+            peer_info,
             torrent_info,
 
             bitfield_peer: Bitfield::empty(pieces),
@@ -109,6 +111,8 @@ impl TcpPeer {
     }
 
     async fn send_peer_message(&mut self, message: Message) -> bool {
+        self.peer_info.write().await.set_last_message_sent(message.clone());
+
         match message {
             Message::KeepAlive => {
                 if let Some(stream) = self.stream.as_mut() {
@@ -274,15 +278,15 @@ impl Peer for TcpPeer {
                     self.status.peer_interested = false;
                 }
 
-                Message::Have(data) => {
+                Message::Have(ref data) => {
                     let piece = data.as_slice().get_u32();
 
                     self.bitfield_peer.piece_finished(piece);
                 }
-                Message::Bitfield(data) => {
-                    self.bitfield_peer = Bitfield::from_peer_data(data);
+                Message::Bitfield(ref data) => {
+                    self.bitfield_peer = Bitfield::from_peer_data(data.to_owned());
                 }
-                Message::Request(data) => {
+                Message::Request(ref data) => {
                     let mut data = data.as_slice();
                     
                     let piece_idx = data.get_u32();
@@ -315,10 +319,12 @@ impl Peer for TcpPeer {
                             if !self.send_peer_message(message).await {
                                 return false;
                             }
+
+                            self.peer_info.write().await.add_uploaded(block_length);
                         }
                     }
                 }
-                Message::Piece(data) => {
+                Message::Piece(ref data) => {
                     let mut data_slice = data.as_slice();
 
                     let piece_idx = data_slice.get_u32();
@@ -345,6 +351,7 @@ impl Peer for TcpPeer {
                             let buf = data_slice.to_vec();
 
                             self.received_data += buf.len();
+                            self.peer_info.write().await.add_downloaded(buf.len());
     
                             if piece.add_received_bytes(buf) {
                                 if piece.check_piece() {
@@ -373,7 +380,7 @@ impl Peer for TcpPeer {
 
                     self.waiting_for_response = false;
                 }
-                Message::Cancel(data) => {
+                Message::Cancel(ref data) => {
                     let mut data = data.as_slice();
                     
                     let _piece = data.get_u32();
@@ -381,6 +388,8 @@ impl Peer for TcpPeer {
                     let _block_length = data.get_u32();
                 }
             }
+        
+            self.peer_info.write().await.set_last_message_received(message);
         }
 
         true
@@ -441,6 +450,10 @@ impl Peer for TcpPeer {
         }
     }
 
+    fn is_potato(&self) -> bool {
+        self.received_data < (self.requested_size / 2) && self.received_data_timer.elapsed() > Duration::from_secs(5)
+    }
+
     fn is_responsive(&self) -> bool {
         self.time_since_last_message.elapsed() < Duration::from_secs(10)
     }
@@ -453,7 +466,7 @@ impl Peer for TcpPeer {
         self.requested
     }
 
-    fn is_potato(&self) -> bool {
-        self.received_data < (self.requested_size / 2) && self.received_data_timer.elapsed() > Duration::from_secs(5)
+    fn get_peer_info(&self) -> Arc<RwLock<PeerInfo>> {
+        self.peer_info.clone()
     }
 }

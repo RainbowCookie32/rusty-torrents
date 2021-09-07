@@ -1,7 +1,13 @@
 pub mod tcp;
 
+use std::sync::Arc;
+use std::fmt::Display;
+use std::time::Instant;
+use std::net::SocketAddrV4;
+
 use bytes::Buf;
 use async_trait::async_trait;
+use tokio::sync::RwLock;
 
 #[async_trait]
 pub trait Peer {
@@ -15,6 +21,85 @@ pub trait Peer {
     fn is_responsive(&self) -> bool;
     fn should_request(&self) -> bool;
     fn get_assigned_piece(&self) -> Option<usize>;
+    fn get_peer_info(&self) -> Arc<RwLock<PeerInfo>>;
+}
+
+pub struct PeerInfo {
+    active: bool,
+
+    uploaded_total: usize,
+    downloaded_total: usize,
+
+    last_message_sent: Option<Message>,
+    last_message_received: Option<Message>,
+
+    address: SocketAddrV4,
+    start_time: Instant,
+}
+
+impl PeerInfo {
+    pub fn new(address: SocketAddrV4) -> PeerInfo {
+        PeerInfo {
+            active: true,
+
+            uploaded_total: 0,
+            downloaded_total: 0,
+
+            last_message_sent: None,
+            last_message_received: None,
+
+            address,
+            start_time: Instant::now()
+        }
+    }
+
+    pub fn active(&self) -> bool {
+        self.active
+    }
+
+    pub fn uploaded_total(&self) -> usize {
+        self.uploaded_total
+    }
+
+    pub fn downloaded_total(&self) -> usize {
+        self.downloaded_total
+    }
+
+    pub fn last_message_sent(&self) -> Option<&Message> {
+        self.last_message_sent.as_ref()
+    }
+
+    pub fn last_message_received(&self) -> Option<&Message> {
+        self.last_message_received.as_ref()
+    }
+
+    pub fn address(&self) -> SocketAddrV4 {
+        self.address
+    }
+
+    pub fn set_active(&mut self, active: bool) {
+        self.active = active;
+    }
+
+    pub fn set_last_message_sent(&mut self, last_message: Message) {
+        self.last_message_sent = Some(last_message);
+    }
+
+    pub fn set_last_message_received(&mut self, last_message_received: Message) {
+        self.last_message_received = Some(last_message_received);
+    }
+
+    pub fn add_uploaded(&mut self, value: usize) {
+        self.uploaded_total += value;
+    }
+
+    pub fn add_downloaded(&mut self, value: usize) {
+        self.downloaded_total += value;
+    }
+
+    pub fn start_time(&self) -> &Instant {
+        &self.start_time
+    }
 }
 
 pub struct PeerStatus {
@@ -94,6 +179,7 @@ impl Bitfield {
     }
 }
 
+#[derive(Clone)]
 pub enum Message {
     KeepAlive,
 
@@ -137,6 +223,23 @@ impl Message {
                 
                 _ => None
             }
+        }
+    }
+}
+
+impl Display for Message {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Message::KeepAlive => write!(f, "Keep Alive"),
+            Message::Choke => write!(f, "Choke"),
+            Message::Unchoke => write!(f, "Unchoke"),
+            Message::Interested => write!(f, "Interested"),
+            Message::NotInterested => write!(f, "Not Interested"),
+            Message::Have(_) => write!(f, "Have"),
+            Message::Bitfield(_) => write!(f, "Bitfield"),
+            Message::Request(_) => write!(f, "Request"),
+            Message::Piece(_) => write!(f, "Piece"),
+            Message::Cancel(_) => write!(f, "Cancel")
         }
     }
 }

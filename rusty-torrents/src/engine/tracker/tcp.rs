@@ -3,10 +3,11 @@ use std::time::{Duration, Instant};
 use std::net::{Ipv4Addr, SocketAddrV4};
 
 use bytes::Buf;
+use tokio::sync::RwLock;
 use rusty_parser::BEncodeType;
 
 use crate::engine::TorrentInfo;
-use crate::engine::peer::Peer;
+use crate::engine::peer::{Peer, PeerInfo};
 use crate::engine::peer::tcp::TcpPeer;
 use crate::engine::tracker::TrackerEvent;
 
@@ -45,7 +46,9 @@ impl TcpTracker {
         let mut peers: Vec<Box<dyn Peer+Send>> = Vec::new();
 
         for address in self.peers_list.iter() {
-            peers.push(Box::new(TcpPeer::new(*address, self.info.clone()).await));
+            let peer_info = Arc::new(RwLock::new(PeerInfo::new(*address)));
+
+            peers.push(Box::new(TcpPeer::new(*address, peer_info, self.info.clone()).await));
         }
 
         peers

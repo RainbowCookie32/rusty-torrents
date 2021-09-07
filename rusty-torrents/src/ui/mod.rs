@@ -1,6 +1,7 @@
 use std::io::Stdout;
 use std::sync::Arc;
 use std::io::stdout;
+use std::time::Instant;
 
 use tui::Frame;
 use tui::terminal::Terminal;
@@ -21,11 +22,13 @@ pub struct App {
     selected_tab: usize,
     
     files_state: TableState,
+    peers_state: TableState,
     piece_state: TableState,
 
     total_size: usize,
     total_downloaded: usize,
 
+    start_time: Instant,
     torrent_info: Arc<TorrentInfo>
 }
 
@@ -50,11 +53,13 @@ impl App {
             selected_tab: 0,
 
             files_state: TableState::default(),
+            peers_state: TableState::default(),
             piece_state: TableState::default(),
 
             total_size,
             total_downloaded,
             
+            start_time: Instant::now(),
             torrent_info
         }
     }
@@ -175,6 +180,18 @@ impl App {
             if self.selected_tab == 0 {
                 (&mut self.files_state, self.torrent_info.data().get_files().len())
             }
+            else if self.selected_tab == 1 {
+                let max = {
+                    if let Ok(lock) = self.torrent_info.torrent_peers().try_read() {
+                        lock.len()
+                    }
+                    else {
+                        50
+                    }
+                };
+
+                (&mut self.peers_state, max)
+            }
             else {
                 (&mut self.piece_state, self.torrent_info.data().info().pieces().len())
             }
@@ -226,6 +243,19 @@ impl App {
             ((self.total_downloaded as f32 / self.total_size as f32) * 100.0) as u16
         };
 
+        let rate = {
+            let now = Instant::now();
+            let start_time = self.start_time;
+            let elapsed = now.checked_sub(start_time.elapsed()).unwrap().elapsed();
+
+            if elapsed.as_secs() > 0 {
+                self.total_downloaded / elapsed.as_secs() as usize
+            }
+            else {
+                0
+            }
+        };
+
         let gauge = Gauge::default()
             .percent(progress)
             .block(Block::default().borders(Borders::ALL))
@@ -235,16 +265,18 @@ impl App {
         let row = Row::new(vec![
             Cell::from(Span::styled(name, Style::default())),
             Cell::from(Span::styled(format!("{} MB", (self.total_size / 1024) / 1024), Style::default())),
-            Cell::from(Span::styled(format!("{} MB", (self.total_downloaded / 1024) / 1024), Style::default()))
+            Cell::from(Span::styled(format!("{} MB", (self.total_downloaded / 1024) / 1024), Style::default())),
+            Cell::from(Span::styled(format!("{} kb/s", rate / 1024), Style::default()))
         ]);
 
         let table = Table::new(vec![row])
             .block(Block::default().borders(Borders::ALL))
-            .header(Row::new(vec!["Name", "Size", "Downloaded"]).bottom_margin(1))
+            .header(Row::new(vec!["Name", "Size", "Downloaded", "DL Rate"]).bottom_margin(1))
             .widths(&[
-                Constraint::Percentage(50),
-                Constraint::Percentage(25),
-                Constraint::Percentage(25)
+                Constraint::Percentage(35),
+                Constraint::Percentage(10),
+                Constraint::Percentage(10),
+                Constraint::Percentage(45)
             ])
         ;
 
@@ -294,9 +326,76 @@ impl App {
         f.render_stateful_widget(table, area, &mut self.files_state);
     }
 
-    // TODO: needs some reworking of peer handling on the engine's side.
     fn draw_peers_tab(&mut self, f: &mut Frame<CrosstermBackend<Stdout>>, area: Rect) {
+        let mut rows = Vec::new();
 
+        let peers = self.torrent_info.torrent_peers();
+        let peers_lock = peers.try_read();
+
+        if let Ok(peers) = peers_lock {
+            for peer in peers.iter() {
+                if let Ok(lock) = peer.try_read() {
+                    let now = Instant::now();
+                    let start_time = lock.start_time();
+                    let elapsed = now.checked_sub(start_time.elapsed()).unwrap().elapsed();
+                    let rate = {
+                        if elapsed.as_secs() > 0 {
+                            lock.downloaded_total() / elapsed.as_secs() as usize
+                        }
+                        else {
+                            0
+                        }
+                    };
+
+                    rows.push(Row::new(vec![
+                        lock.address().to_string(),
+                        format!("{}KB", lock.downloaded_total() / 1024),
+                        format!("{}KB", lock.uploaded_total() / 1024),
+                        format!("{} kb/s", rate / 1024),
+                        {
+                            if let Some(message) = lock.last_message_sent() {
+                                format!("{}", message)
+                            }
+                            else {
+                                String::from("-")
+                            }
+                        },
+                        {
+                            if let Some(message) = lock.last_message_received() {
+                                format!("{}", message)
+                            }
+                            else {
+                                String::from("-")
+                            }
+                        }
+                    ]));
+                }
+            }
+    
+            let table = Table::new(rows)
+                .block(Block::default().borders(Borders::ALL))
+                .header(Row::new(vec![
+                    "Address",
+                    "Downloaded",
+                    "Uploaded",
+                    "DL Rate",
+                    "Last Message Sent",
+                    "Last Message Received"
+                ]).bottom_margin(1))
+                .widths(&[
+                    Constraint::Percentage(20),
+                    Constraint::Percentage(10),
+                    Constraint::Percentage(10),
+                    Constraint::Percentage(10),
+                    Constraint::Percentage(20),
+                    Constraint::Percentage(30)
+                ])
+                .highlight_symbol("> ")
+                .highlight_style(Style::default().fg(Color::Yellow))
+            ;
+            
+            f.render_stateful_widget(table, area, &mut self.peers_state);
+        }
     }
 
     fn draw_pieces_tab(&mut self, f: &mut Frame<CrosstermBackend<Stdout>>, area: Rect) {
