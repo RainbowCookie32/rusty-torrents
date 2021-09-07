@@ -172,6 +172,19 @@ impl Engine {
     
                         if let Some(result) = tracker.send_message(message).await {
                             for address in result {
+                                let mut skip = false;
+
+                                for peer in self.torrent_info.torrent_peers().read().await.iter() {
+                                    if peer.read().await.address() == address {
+                                        skip = true;
+                                        break;
+                                    }
+                                }
+
+                                if skip {
+                                    continue;
+                                }
+
                                 let torrent_info = self.torrent_info.clone();
                                 let peer_info = Arc::new(RwLock::new(PeerInfo::new(address)));
 
