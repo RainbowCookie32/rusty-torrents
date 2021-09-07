@@ -266,22 +266,33 @@ impl App {
             .block(Block::default().borders(Borders::ALL))
             .gauge_style(Style::default().fg(Color::Magenta).bg(Color::White))
         ;
+        
+        let peers = {
+            if let Ok(peers) = self.torrent_info.torrent_peers().try_read() {
+                peers.len()
+            }
+            else {
+                0
+            }
+        };
 
         let row = Row::new(vec![
             Cell::from(Span::styled(name, Style::default())),
             Cell::from(Span::styled(format!("{} MB", (self.total_size / 1024) / 1024), Style::default())),
             Cell::from(Span::styled(format!("{} MB", (self.total_downloaded / 1024) / 1024), Style::default())),
-            Cell::from(Span::styled(format!("{} kb/s", rate / 1024), Style::default()))
+            Cell::from(Span::styled(format!("{} kb/s", rate / 1024), Style::default())),
+            Cell::from(Span::styled(peers.to_string(), Style::default()))
         ]);
 
         let table = Table::new(vec![row])
             .block(Block::default().borders(Borders::ALL))
-            .header(Row::new(vec!["Name", "Size", "Downloaded", "DL Rate"]).bottom_margin(1))
+            .header(Row::new(vec!["Name", "Size", "Downloaded", "DL Rate", "Peers"]).bottom_margin(1))
             .widths(&[
                 Constraint::Percentage(35),
                 Constraint::Percentage(10),
                 Constraint::Percentage(10),
-                Constraint::Percentage(45)
+                Constraint::Percentage(10),
+                Constraint::Percentage(35)
             ])
         ;
 
