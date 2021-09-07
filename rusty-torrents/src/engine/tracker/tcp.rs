@@ -3,12 +3,9 @@ use std::time::{Duration, Instant};
 use std::net::{Ipv4Addr, SocketAddrV4};
 
 use bytes::Buf;
-use tokio::sync::RwLock;
 use rusty_parser::BEncodeType;
 
 use crate::engine::TorrentInfo;
-use crate::engine::peer::{Peer, PeerInfo};
-use crate::engine::peer::tcp::TcpPeer;
 use crate::engine::tracker::TrackerEvent;
 
 pub struct TcpTracker {
@@ -16,7 +13,6 @@ pub struct TcpTracker {
     tracker_url: String,
 
     info: Arc<TorrentInfo>,
-    peers_list: Vec<SocketAddrV4>,
 
     announced: bool,
     announce_interval: Duration,
@@ -34,7 +30,6 @@ impl TcpTracker {
             tracker_url,
 
             info,
-            peers_list: Vec::new(),
 
             announced: false,
             announce_interval: Duration::from_secs(20),
@@ -42,24 +37,18 @@ impl TcpTracker {
         }
     }
 
-    pub async fn get_peers(&self) -> Vec<Box<dyn Peer+Send>> {
-        let mut peers: Vec<Box<dyn Peer+Send>> = Vec::new();
-
-        for address in self.peers_list.iter() {
-            let peer_info = Arc::new(RwLock::new(PeerInfo::new(*address)));
-
-            peers.push(Box::new(TcpPeer::new(*address, peer_info, self.info.clone()).await));
-        }
-
-        peers
+    pub fn is_announced(&self) -> bool {
+        self.announced
     }
 
-    pub async fn send_message(&mut self, event: TrackerEvent) {
+    pub async fn send_message(&mut self, event: TrackerEvent) -> Option<Vec<SocketAddrV4>> {
         if let TrackerEvent::PeriodicRequest = event {
             if self.announced && self.time_since_last_message.elapsed() < self.announce_interval {
-                return;
+                return None;
             }
         }
+
+        let mut result = None;
 
         let event = match event {
             TrackerEvent::Started => String::from("&event=started"),
@@ -79,7 +68,7 @@ impl TcpTracker {
         let downloaded = total_size - missing;
 
         let tracker_query = format!(
-            "{}?info_hash={}&peer_id={}&port=6881&uploaded={}&downloaded={}&left={}&compact=1{}",
+            "{}?info_hash={}&peer_id={}&port=6881&uploaded={}&downloaded={}&left={}&compact=1&numwant=100{}",
             self.tracker_url, info_hash, self.client_id, 0, downloaded, missing, event
         );
         
@@ -96,14 +85,18 @@ impl TcpTracker {
                     let peers_bytes = peers.get_string_bytes();
                     let mut peers_bytes_slice = peers_bytes.as_slice();
 
+                    let mut list = Vec::new();
+
                     for _ in (0..peers_bytes.len()).step_by(6) {
                         let ip = peers_bytes_slice.get_u32();
                         let port = peers_bytes_slice.get_u16();
                         let socket_addr = SocketAddrV4::new(Ipv4Addr::from(ip), port);
 
-                        if !self.peers_list.contains(&socket_addr) {
-                            self.peers_list.push(socket_addr);
-                        }
+                        list.push(socket_addr);
+                    }
+
+                    if !list.is_empty() {
+                        result = Some(list);
                     }
                 }
 
@@ -115,5 +108,7 @@ impl TcpTracker {
                 break;
             }
         }
+
+        result
     }
 }

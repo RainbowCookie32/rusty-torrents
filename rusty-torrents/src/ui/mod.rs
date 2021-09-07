@@ -249,7 +249,12 @@ impl App {
             let elapsed = now.checked_sub(start_time.elapsed()).unwrap().elapsed();
 
             if elapsed.as_secs() > 0 {
-                self.total_downloaded / elapsed.as_secs() as usize
+                if let Ok(lock) = self.torrent_info.total_downloaded.try_read() {
+                    *lock / elapsed.as_secs() as usize
+                }
+                else {
+                    0
+                }
             }
             else {
                 0

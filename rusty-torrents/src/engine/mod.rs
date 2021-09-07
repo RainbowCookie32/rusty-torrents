@@ -12,12 +12,17 @@ use rusty_parser::ParsedTorrent;
 
 use file::File;
 use piece::Piece;
-use peer::{Bitfield, Peer, PeerInfo};
 use tracker::{TrackerKind, TrackerEvent};
+
+use peer::tcp::TcpPeer;
+use peer::{Bitfield, Peer, PeerInfo};
 
 pub struct TorrentInfo {
     data: ParsedTorrent,
     piece_length: usize,
+
+    pub total_uploaded: Arc<RwLock<usize>>,
+    pub total_downloaded: Arc<RwLock<usize>>,
 
     torrent_files: Arc<RwLock<Vec<File>>>,
     torrent_pieces: Arc<RwLock<Vec<Piece>>>,
@@ -123,6 +128,9 @@ impl Engine {
             data,
             piece_length,
 
+            total_uploaded: Arc::new(RwLock::new(0)),
+            total_downloaded: Arc::new(RwLock::new(0)),
+
             torrent_files,
             torrent_pieces: Arc::new(RwLock::new(Vec::new())),
             torrent_peers: Arc::new(RwLock::new(Vec::new())),
@@ -147,83 +155,98 @@ impl Engine {
     }
 
     pub async fn start_torrent(&mut self) {
-        let mut peers: Vec<Box<dyn Peer+Send>> = Vec::new();
+        loop {
+            let mut received_peers: Vec<Box<dyn Peer+Send>> = Vec::new();
 
-        for tracker in self.trackers.iter_mut() {
-            match tracker {
-                TrackerKind::Tcp(t) => {
-                    t.send_message(TrackerEvent::Started).await;
-                    peers.append(&mut t.get_peers().await);
-                },
-                TrackerKind::Udp => unimplemented!(),
-            }
-        }
-
-        for peer in peers {
-            let info = self.torrent_info.clone();
-            let peer_info = peer.get_peer_info();
-
-            info.torrent_peers.write().await.push(peer_info);
-
-            tokio::task::spawn(async move {
-                let info = info;
-                let mut peer = peer;
-
-                if peer.connect().await {
-                    loop {
-                        if !peer.handle_peer_messages().await {
-                            let info = peer.get_peer_info();
-
-                            info.write().await.set_active(false);
-                            peer.release_requested_piece().await;
-
-                            break;
-                        }
-
-                        tokio::task::yield_now().await;
-
-                        if peer.should_request() {
-                            let piece = peer.get_assigned_piece();
-
-                            if let Some(piece) = piece {
-                                if peer.request_piece(piece).await {
-                                    info.piece_requested(piece).await;
-                                }
+            for tracker in self.trackers.iter_mut() {
+                match tracker {
+                    TrackerKind::Tcp(tracker) => {
+                        let message = {
+                            if tracker.is_announced() {
+                                TrackerEvent::PeriodicRequest
                             }
-                            else if let Some(missing_pieces) = info.get_missing_pieces_count() {
-                                if missing_pieces > 0 {
-                                    let piece = info.get_unfinished_piece_idx().await;
+                            else {
+                                TrackerEvent::Started
+                            }
+                        };
+    
+                        if let Some(result) = tracker.send_message(message).await {
+                            for address in result {
+                                let torrent_info = self.torrent_info.clone();
+                                let peer_info = Arc::new(RwLock::new(PeerInfo::new(address)));
 
+                                self.torrent_info.torrent_peers.write().await.push(peer_info.clone());
+                                received_peers.push(Box::new(TcpPeer::new(address, peer_info, torrent_info).await));
+                            }
+
+                            
+                        }
+                    },
+                    TrackerKind::Udp => unimplemented!()
+                }
+            }
+
+            for peer in received_peers {
+                let info = self.torrent_info.clone();
+    
+                tokio::task::spawn(async move {
+                    let info = info;
+                    let mut peer = peer;
+    
+                    if peer.connect().await {
+                        loop {
+                            if !peer.handle_peer_messages().await {
+                                let info = peer.get_peer_info();
+    
+                                info.write().await.set_active(false);
+                                peer.release_requested_piece().await;
+    
+                                break;
+                            }
+    
+                            tokio::task::yield_now().await;
+    
+                            if peer.should_request() {
+                                let piece = peer.get_assigned_piece();
+    
+                                if let Some(piece) = piece {
                                     if peer.request_piece(piece).await {
                                         info.piece_requested(piece).await;
                                     }
                                 }
-                                else {
-                                    // peer.send_keep_alive().await;
+                                else if let Some(missing_pieces) = info.get_missing_pieces_count() {
+                                    if missing_pieces > 0 {
+                                        let piece = info.get_unfinished_piece_idx().await;
+    
+                                        if peer.request_piece(piece).await {
+                                            info.piece_requested(piece).await;
+                                        }
+                                    }
+                                    else {
+                                        // peer.send_keep_alive().await;
+                                    }
                                 }
                             }
+    
+                            if !peer.is_responsive() || peer.is_potato() {
+                                let info = peer.get_peer_info();
+    
+                                info.write().await.set_active(false);
+                                peer.release_requested_piece().await;
+    
+                                break;
+                            }
+    
+                            tokio::task::yield_now().await;
+                            std::thread::sleep(std::time::Duration::from_millis(1));
                         }
-
-                        if !peer.is_responsive() || peer.is_potato() {
-                            let info = peer.get_peer_info();
-
-                            info.write().await.set_active(false);
-                            peer.release_requested_piece().await;
-
-                            break;
-                        }
-
-                        tokio::task::yield_now().await;
-                        std::thread::sleep(std::time::Duration::from_millis(1));
                     }
-                }
-            });
-        }
-
-        loop {
+                });
+            }
+    
             if let Ok(mut lock) = self.torrent_info.torrent_peers.try_write() {
                 let infos = lock.to_owned();
-
+    
                 let clear: Vec<Arc<RwLock<PeerInfo>>> = infos.into_iter().filter(|i| {
                     if let Ok(i) = i.try_read() {
                         i.active()
@@ -232,10 +255,10 @@ impl Engine {
                         true
                     }
                 }).collect();
-
+    
                 *lock = clear;
             }
-
+    
             std::thread::sleep(std::time::Duration::from_millis(5));
         }
     }

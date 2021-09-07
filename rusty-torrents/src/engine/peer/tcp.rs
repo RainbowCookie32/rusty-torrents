@@ -321,6 +321,7 @@ impl Peer for TcpPeer {
                             }
 
                             self.peer_info.write().await.add_uploaded(block_length);
+                            *self.torrent_info.total_uploaded.write().await += block_length;
                         }
                     }
                 }
@@ -352,6 +353,7 @@ impl Peer for TcpPeer {
 
                             self.received_data += buf.len();
                             self.peer_info.write().await.add_downloaded(buf.len());
+                            *self.torrent_info.total_downloaded.write().await += buf.len();
     
                             if piece.add_received_bytes(buf) {
                                 if piece.check_piece() {
