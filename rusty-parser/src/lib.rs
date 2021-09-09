@@ -298,7 +298,14 @@ impl TorrentInfo {
         let info_hash = info.get_dictionary_hash();
         let info = info.get_dictionary();
 
-        let length = info.get("length").unwrap().get_int();
+        let length = {
+            if let Some(length) = info.get("length") {
+                length.get_int()
+            }
+            else {
+                0
+            }
+        };
         let name = info.get("name").unwrap().get_string();
         let piece_length = info.get("piece length").unwrap().get_int();
 
