@@ -286,9 +286,9 @@ impl App {
 
         let row = Row::new(vec![
             Cell::from(Span::styled(name, Style::default())),
-            Cell::from(Span::styled(format!("{} MB", (self.total_size / 1024) / 1024), Style::default())),
-            Cell::from(Span::styled(format!("{} MB", (self.total_downloaded / 1024) / 1024), Style::default())),
-            Cell::from(Span::styled(format!("{} kb/s", rate / 1024), Style::default())),
+            Cell::from(Span::styled(App::bytes_data(self.total_size as u32), Style::default())),
+            Cell::from(Span::styled(App::bytes_data(self.total_downloaded as u32), Style::default())),
+            Cell::from(Span::styled(App::bytes_rate(rate as u32), Style::default())),
             Cell::from(Span::styled(peers.to_string(), Style::default()))
         ]);
 
@@ -335,7 +335,7 @@ impl App {
         let mut rows = Vec::new();
 
         for (file, size) in self.torrent_info.data().get_files() {
-            rows.push(Row::new(vec![file.clone(), format!("{} MB", (size / 1024) / 1024)]));
+            rows.push(Row::new(vec![file.clone(), App::bytes_data(*size as u32)]));
         }
 
         let table = Table::new(rows)
@@ -376,9 +376,9 @@ impl App {
                     rows.push(Row::new(vec![
                         lock.address().to_string(),
                         format!("{}", lock.status()),
-                        format!("{}KB", lock.downloaded_total() / 1024),
-                        format!("{}KB", lock.uploaded_total() / 1024),
-                        format!("{} kb/s", rate / 1024),
+                        App::bytes_data(lock.downloaded_total() as u32),
+                        App::bytes_data(lock.uploaded_total() as u32),
+                        App::bytes_rate(rate as u32),
                         {
                             if let Some(message) = lock.last_message_sent() {
                                 format!("{}", message)
@@ -437,8 +437,8 @@ impl App {
             for (i, piece) in pieces.iter().enumerate() {
                 rows.push(Row::new(vec![
                     i.to_string(),
-                    format!("{}KB", piece.get_len() / 1024),
-                    format!("{}KB", piece.get_downloaded() / 1024),
+                    App::bytes_data(piece.get_len() as u32),
+                    App::bytes_data(piece.get_downloaded() as u32),
                     if piece.requested() {String::from("Yes")} else {String::from("No")},
                     if piece.finished() {String::from("Yes")} else {String::from("No")}
                 ]));
@@ -460,5 +460,63 @@ impl App {
             
             f.render_stateful_widget(table, area, &mut self.piece_state);
         }
+    }
+
+    fn bytes_data(bytes: u32) -> String {
+        let mut bytes = bytes;
+
+        if bytes > 1024 {
+            bytes /= 1024;
+
+            if bytes < 1024 {
+                return format!("{}KB", bytes);
+            }
+            else {
+                bytes /= 1024;
+
+                if bytes < 1024 {
+                    return format!("{}MB", bytes);
+                }
+                else {
+                    bytes /= 1024;
+                    
+                    return format!("{}GB", bytes);
+                }
+            }
+        }
+        else {
+            return format!("{}B", bytes);
+        }
+
+        String::new()
+    }
+
+    fn bytes_rate(bytes: u32) -> String {
+        let mut bytes = bytes;
+
+        if bytes > 1024 {
+            bytes /= 1024;
+
+            if bytes < 1024 {
+                return format!("{}KB/s", bytes);
+            }
+            else {
+                bytes /= 1024;
+
+                if bytes < 1024 {
+                    return format!("{}MB/s", bytes);
+                }
+                else {
+                    bytes /= 1024;
+                    
+                    return format!("{}GB/s", bytes);
+                }
+            }
+        }
+        else {
+            return format!("{}B/s", bytes);
+        }
+
+        String::new()
     }
 }
