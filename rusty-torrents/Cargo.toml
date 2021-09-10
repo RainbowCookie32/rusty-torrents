@@ -21,10 +21,4 @@ crossterm = "0.21.0"
 tui = { version = "0.16", default-features = false, features = ['crossterm'] }
 reqwest = { version = "0.11.4", default-features = false, features = ["tokio-native-tls"] }
 
-[target.'cfg(windows)'.dependencies]
-futures = "0.3.15"
-async-net = "1.6.1"
-tokio = { version = "1.11.0", default-features = false, features = ["rt", "rt-multi-thread", "macros", "fs", "sync"] }
-
-[target.'cfg(unix)'.dependencies]
 tokio = { version = "1.11.0", default-features = false, features = ["rt", "rt-multi-thread", "macros", "fs", "net", "sync"] }

@@ -13,9 +13,7 @@ use rusty_parser::ParsedTorrent;
 use file::File;
 use piece::Piece;
 use tracker::{TrackerKind, TrackerEvent};
-
-use peer::tcp::TcpPeer;
-use peer::{Bitfield, Peer, PeerInfo};
+use peer::{Bitfield, ConnectionStatus, Peer, PeerInfo};
 
 pub struct TorrentInfo {
     data: ParsedTorrent,
@@ -32,6 +30,28 @@ pub struct TorrentInfo {
 }
 
 impl TorrentInfo {
+    pub fn get_handshake(&self) -> Vec<u8> {
+        let id: String = vec!['e'; 20].iter().collect();
+        let info_hash = self.data.info().info_hash();
+        let mut handshake = b"BitTorrent protocol".to_vec();
+
+        handshake.insert(0, 19);
+
+        for offset in 0..8 {
+            handshake.insert(20 + offset, 0);
+        }
+    
+        for (offset, byte) in info_hash.iter().enumerate() {
+            handshake.insert(28 + offset, *byte);
+        }
+        
+        for (offset, c) in id.chars().enumerate() {
+            handshake.insert(48 + offset, c as u8);
+        }
+
+        handshake
+    }
+
     pub async fn release_piece(&self, idx: usize) {
         if let Some(piece) = self.torrent_pieces.write().await.get_mut(idx) {
             piece.set_requested(false);
@@ -156,8 +176,6 @@ impl Engine {
 
     pub async fn start_torrent(&mut self) {
         loop {
-            let mut received_peers: Vec<Box<dyn Peer+Send>> = Vec::new();
-
             for tracker in self.trackers.iter_mut() {
                 match tracker {
                     TrackerKind::Tcp(tracker) => {
@@ -185,11 +203,8 @@ impl Engine {
                                     continue;
                                 }
 
-                                let torrent_info = self.torrent_info.clone();
-                                let peer_info = Arc::new(RwLock::new(PeerInfo::new(address)));
-
-                                self.torrent_info.torrent_peers.write().await.push(peer_info.clone());
-                                received_peers.push(Box::new(TcpPeer::new(address, peer_info, torrent_info).await));
+                                let info_peer = Arc::new(RwLock::new(PeerInfo::new(address)));
+                                self.torrent_info.torrent_peers.write().await.push(info_peer);
                             }
 
                             
@@ -199,40 +214,45 @@ impl Engine {
                 }
             }
 
-            for peer in received_peers {
-                let info = self.torrent_info.clone();
+            for info in self.torrent_info.torrent_peers.read().await.iter() {
+                if info.read().await.status() != ConnectionStatus::Disconnected {
+                    continue;
+                }
+
+                let info_peer = info.clone();
+                let info_torrent = self.torrent_info.clone();
     
                 tokio::task::spawn(async move {
-                    let info = info;
-                    let mut peer = peer;
-    
-                    if peer.connect().await {
+                    let info_peer = info_peer;
+                    let info_torrent = info_torrent;
+
+                    info_peer.write().await.set_status(ConnectionStatus::Connecting);
+
+                    if let Some(mut peer) = Peer::connect(info_peer.clone(), info_torrent.clone()).await {
+                        info_peer.write().await.set_status(ConnectionStatus::Connected);
+
                         loop {
-                            if !peer.handle_peer_messages().await {
-                                let info = peer.get_peer_info();
-    
-                                info.write().await.set_active(false);
+                            if !peer.handle_messages().await {
                                 peer.release_requested_piece().await;
+                                info_peer.write().await.set_status(ConnectionStatus::Dropped);
     
                                 break;
                             }
-    
-                            tokio::task::yield_now().await;
-    
-                            if peer.should_request() {
-                                let piece = peer.get_assigned_piece();
+        
+                            if peer.should_request_piece() {
+                                let piece = peer.get_requested_piece();
     
                                 if let Some(piece) = piece {
                                     if peer.request_piece(piece).await {
-                                        info.piece_requested(piece).await;
+                                        info_torrent.piece_requested(piece).await;
                                     }
                                 }
-                                else if let Some(missing_pieces) = info.get_missing_pieces_count() {
+                                else if let Some(missing_pieces) = info_torrent.get_missing_pieces_count() {
                                     if missing_pieces > 0 {
-                                        let piece = info.get_unfinished_piece_idx().await;
+                                        let piece = info_torrent.get_unfinished_piece_idx().await;
     
                                         if peer.request_piece(piece).await {
-                                            info.piece_requested(piece).await;
+                                            info_torrent.piece_requested(piece).await;
                                         }
                                     }
                                     else {
@@ -241,11 +261,9 @@ impl Engine {
                                 }
                             }
     
-                            if !peer.is_responsive() || peer.is_potato() {
-                                let info = peer.get_peer_info();
-    
-                                info.write().await.set_active(false);
+                            if peer.should_drop() {
                                 peer.release_requested_piece().await;
+                                info_peer.write().await.set_status(ConnectionStatus::Dropped);
     
                                 break;
                             }
@@ -253,6 +271,9 @@ impl Engine {
                             tokio::task::yield_now().await;
                             std::thread::sleep(std::time::Duration::from_millis(1));
                         }
+                    }
+                    else {
+                        info_peer.write().await.set_status(ConnectionStatus::Dropped);
                     }
                 });
             }
@@ -262,7 +283,7 @@ impl Engine {
     
                 let clear: Vec<Arc<RwLock<PeerInfo>>> = infos.into_iter().filter(|i| {
                     if let Ok(i) = i.try_read() {
-                        i.active()
+                        i.status() != ConnectionStatus::Dropped
                     }
                     else {
                         true

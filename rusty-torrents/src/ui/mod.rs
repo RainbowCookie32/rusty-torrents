@@ -365,6 +365,7 @@ impl App {
 
                     rows.push(Row::new(vec![
                         lock.address().to_string(),
+                        format!("{}", lock.status()),
                         format!("{}KB", lock.downloaded_total() / 1024),
                         format!("{}KB", lock.uploaded_total() / 1024),
                         format!("{} kb/s", rate / 1024),
@@ -392,6 +393,7 @@ impl App {
                 .block(Block::default().borders(Borders::ALL))
                 .header(Row::new(vec![
                     "Address",
+                    "Status",
                     "Downloaded",
                     "Uploaded",
                     "DL Rate",
@@ -403,8 +405,9 @@ impl App {
                     Constraint::Percentage(10),
                     Constraint::Percentage(10),
                     Constraint::Percentage(10),
+                    Constraint::Percentage(10),
                     Constraint::Percentage(20),
-                    Constraint::Percentage(30)
+                    Constraint::Percentage(20)
                 ])
                 .highlight_symbol("> ")
                 .highlight_style(Style::default().fg(Color::Yellow))
