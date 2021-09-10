@@ -7,8 +7,10 @@ mod tracker;
 use std::sync::Arc;
 
 use rand::Rng;
-use tokio::sync::RwLock;
 use rusty_parser::ParsedTorrent;
+
+use tokio::sync::RwLock;
+use tokio::sync::oneshot::Receiver;
 
 use file::File;
 use piece::Piece;
@@ -118,11 +120,13 @@ impl TorrentInfo {
 
 pub struct Engine {
     trackers: Vec<TrackerKind>,
-    torrent_info: Arc<TorrentInfo>
+    torrent_info: Arc<TorrentInfo>,
+
+    stop_rx: Receiver<()>
 }
 
 impl Engine {
-    pub async fn init(data: Vec<u8>) -> Engine {
+    pub async fn init(data: Vec<u8>, stop_rx: Receiver<()>) -> Engine {
         let data = ParsedTorrent::new(data);
         let piece_length = data.info().piece_length() as usize;
 
@@ -166,7 +170,9 @@ impl Engine {
 
         Engine {
             trackers,
-            torrent_info
+            torrent_info,
+
+            stop_rx
         }
     }
 
@@ -176,6 +182,21 @@ impl Engine {
 
     pub async fn start_torrent(&mut self) {
         loop {
+            if self.stop_rx.try_recv().is_ok() {
+                for tracker in self.trackers.iter_mut() {
+                    match tracker {
+                        TrackerKind::Tcp(tracker) => {
+                            tracker.send_message(TrackerEvent::Stopped).await;
+                        }
+                        TrackerKind::Udp => {
+
+                        }
+                    }
+                }
+
+                break;
+            }
+
             for tracker in self.trackers.iter_mut() {
                 match tracker {
                     TrackerKind::Tcp(tracker) => {

@@ -7,6 +7,8 @@ use tui::Frame;
 use tui::terminal::Terminal;
 use tui::backend::CrosstermBackend;
 
+use tokio::sync::oneshot::Sender;
+
 use tui::text::{Span, Spans};
 use tui::style::{Color, Style};
 use tui::layout::{Constraint, Layout, Rect};
@@ -28,12 +30,14 @@ pub struct App {
     total_size: usize,
     total_downloaded: usize,
 
+    stop_tx: Sender<()>,
+
     start_time: Instant,
     torrent_info: Arc<TorrentInfo>
 }
 
 impl App {
-    pub fn new(torrent_info: Arc<TorrentInfo>) -> App {
+    pub fn new(stop_tx: Sender<()>, torrent_info: Arc<TorrentInfo>) -> App {
         let (total_size, total_downloaded) = {
             let mut total = 0;
             let mut downloaded = 0;
@@ -58,13 +62,15 @@ impl App {
 
             total_size,
             total_downloaded,
+
+            stop_tx,
             
             start_time: Instant::now(),
             torrent_info
         }
     }
 
-    pub fn draw(&mut self) {
+    pub fn draw(mut self) {
         let mut stdout = stdout();
 
         enable_raw_mode().unwrap();
@@ -117,6 +123,8 @@ impl App {
                                         should_draw = true;
                                     }
                                     KeyCode::Esc | KeyCode::Char('q') => {
+                                        self.stop_tx.send(()).unwrap();
+
                                         disable_raw_mode().unwrap();
         
                                         execute!(
