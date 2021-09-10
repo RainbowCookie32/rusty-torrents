@@ -345,6 +345,8 @@ impl App {
                 Constraint::Percentage(60),
                 Constraint::Percentage(40)
             ])
+            .highlight_symbol("> ")
+            .highlight_style(Style::default().fg(Color::Yellow))
         ;
 
         f.render_stateful_widget(table, area, &mut self.files_state);
