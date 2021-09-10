@@ -41,7 +41,12 @@ jobs:
     - uses: actions/checkout@v2
     - uses: actions/cache@v2
       with:
-        path: target/
+        path: |
+          %userprofile%/.cargo/bin/
+          %userprofile%/.cargo/registry/index/
+          %userprofile%/.cargo/registry/cache/
+          %userprofile%/.cargo/git/db/
+          target/
         key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
     - name: Build (release)
       run: cargo build --release
