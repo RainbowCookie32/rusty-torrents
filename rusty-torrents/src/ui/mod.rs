@@ -487,8 +487,6 @@ impl App {
         else {
             return format!("{}B", bytes);
         }
-
-        String::new()
     }
 
     fn bytes_rate(bytes: u32) -> String {
@@ -516,7 +514,5 @@ impl App {
         else {
             return format!("{}B/s", bytes);
         }
-
-        String::new()
     }
 }
