@@ -186,7 +186,7 @@ impl Engine {
                 for tracker in self.trackers.iter_mut() {
                     match tracker {
                         TrackerKind::Tcp(tracker) => {
-                            tracker.send_message(TrackerEvent::Stopped).await;
+                            tracker.send_message(TrackerEvent::Stopped, true).await;
                         }
                         TrackerKind::Udp => {
 
@@ -209,7 +209,7 @@ impl Engine {
                             }
                         };
     
-                        if let Some(result) = tracker.send_message(message).await {
+                        if let Some(result) = tracker.send_message(message, false).await {
                             for address in result {
                                 let mut skip = false;
 
@@ -310,6 +310,19 @@ impl Engine {
                         true
                     }
                 }).collect();
+
+                if clear.len() < 10 {
+                    for tracker in self.trackers.iter_mut() {
+                        match tracker {
+                            TrackerKind::Tcp(tracker) => {
+                                tracker.send_message(TrackerEvent::PeriodicRequest, true).await;
+                            }
+                            TrackerKind::Udp => {
+    
+                            }
+                        }
+                    }
+                }
     
                 *lock = clear;
             }

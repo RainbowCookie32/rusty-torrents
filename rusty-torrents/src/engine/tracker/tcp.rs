@@ -41,11 +41,16 @@ impl TcpTracker {
         self.announced
     }
 
-    pub async fn send_message(&mut self, event: TrackerEvent) -> Option<Vec<SocketAddrV4>> {
-        if let TrackerEvent::PeriodicRequest = event {
-            if self.announced && self.time_since_last_message.elapsed() < self.announce_interval {
-                return None;
+    pub async fn send_message(&mut self, event: TrackerEvent, force: bool) -> Option<Vec<SocketAddrV4>> {
+        if !force {
+            if let TrackerEvent::PeriodicRequest = event {
+                if self.announced && self.time_since_last_message.elapsed() < self.announce_interval {
+                    return None;
+                }
             }
+        }
+        else if self.time_since_last_message.elapsed().as_secs() < 10 {
+            return None;
         }
 
         let mut result = None;
@@ -101,7 +106,7 @@ impl TcpTracker {
                 }
 
                 if let Some(interval) = entries.get("interval") {
-                    self.announce_interval = Duration::from_secs(interval.get_int() as u64);
+                    self.announce_interval = Duration::from_secs(interval.get_int());
                 }
 
                 self.announced = true;
