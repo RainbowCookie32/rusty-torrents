@@ -41,7 +41,7 @@ impl TcpTracker {
         self.announced
     }
 
-    pub async fn send_message(&mut self, event: TrackerEvent, force: bool) -> Option<Vec<SocketAddrV4>> {
+    pub async fn send_message(&mut self, event: &TrackerEvent, force: bool) -> Option<Vec<SocketAddrV4>> {
         if !force {
             if let TrackerEvent::PeriodicRequest = event {
                 if self.announced && self.time_since_last_message.elapsed() < self.announce_interval {

@@ -4,7 +4,7 @@ mod piece;
 mod utils;
 mod tracker;
 
-use std::sync::Arc;
+use std::{net::SocketAddrV4, sync::Arc};
 
 use rand::Rng;
 use rusty_parser::ParsedTorrent;
@@ -52,6 +52,15 @@ impl TorrentInfo {
         }
 
         handshake
+    }
+
+    pub fn is_complete(&self) -> bool {
+        if let Ok(pieces) = self.torrent_pieces.try_read() {
+            pieces.iter().filter(|p| !p.finished()).count() == 0
+        }
+        else {
+            false
+        }
     }
 
     pub async fn release_piece(&self, idx: usize) {
@@ -181,59 +190,15 @@ impl Engine {
     }
 
     pub async fn start_torrent(&mut self) {
+        let mut complete = false;
+
         loop {
             if self.stop_rx.try_recv().is_ok() {
-                for tracker in self.trackers.iter_mut() {
-                    match tracker {
-                        TrackerKind::Tcp(tracker) => {
-                            tracker.send_message(TrackerEvent::Stopped, true).await;
-                        }
-                        TrackerKind::Udp => {
-
-                        }
-                    }
-                }
-
+                self.send_message_to_trackers(TrackerEvent::Stopped, true).await;
                 break;
             }
 
-            for tracker in self.trackers.iter_mut() {
-                match tracker {
-                    TrackerKind::Tcp(tracker) => {
-                        let message = {
-                            if tracker.is_announced() {
-                                TrackerEvent::PeriodicRequest
-                            }
-                            else {
-                                TrackerEvent::Started
-                            }
-                        };
-    
-                        if let Some(result) = tracker.send_message(message, false).await {
-                            for address in result {
-                                let mut skip = false;
-
-                                for peer in self.torrent_info.torrent_peers().read().await.iter() {
-                                    if peer.read().await.address() == address {
-                                        skip = true;
-                                        break;
-                                    }
-                                }
-
-                                if skip {
-                                    continue;
-                                }
-
-                                let info_peer = Arc::new(RwLock::new(PeerInfo::new(address)));
-                                self.torrent_info.torrent_peers.write().await.push(info_peer);
-                            }
-
-                            
-                        }
-                    },
-                    TrackerKind::Udp => unimplemented!()
-                }
-            }
+            self.send_message_to_trackers(TrackerEvent::PeriodicRequest, false).await;
 
             for info in self.torrent_info.torrent_peers.read().await.iter() {
                 if info.read().await.status() != ConnectionStatus::Disconnected {
@@ -298,37 +263,87 @@ impl Engine {
                     }
                 });
             }
-    
-            if let Ok(mut lock) = self.torrent_info.torrent_peers.try_write() {
-                let infos = lock.to_owned();
-    
-                let clear: Vec<Arc<RwLock<PeerInfo>>> = infos.into_iter().filter(|i| {
-                    if let Ok(i) = i.try_read() {
-                        i.status() != ConnectionStatus::Dropped
-                    }
-                    else {
-                        true
-                    }
-                }).collect();
 
-                if clear.len() < 10 {
-                    for tracker in self.trackers.iter_mut() {
-                        match tracker {
-                            TrackerKind::Tcp(tracker) => {
-                                tracker.send_message(TrackerEvent::PeriodicRequest, true).await;
-                            }
-                            TrackerKind::Udp => {
-    
+            if self.torrent_info.is_complete() && !complete {
+                complete = true;
+                self.send_message_to_trackers(TrackerEvent::Completed, true).await;
+            }
+            
+            self.clear_peers_list().await;
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+    }
+
+    async fn add_peers(&mut self, peers: Vec<SocketAddrV4>) {
+        for address in peers {
+            let mut skip = false;
+
+            for peer in self.torrent_info.torrent_peers().read().await.iter() {
+                if peer.read().await.address() == address {
+                    skip = true;
+                    break;
+                }
+            }
+
+            if skip {
+                continue;
+            }
+
+            let info_peer = Arc::new(RwLock::new(PeerInfo::new(address)));
+            self.torrent_info.torrent_peers.write().await.push(info_peer);
+        }
+    }
+
+    async fn clear_peers_list(&mut self) {
+        if let Ok(mut lock) = self.torrent_info.torrent_peers.try_write() {
+            let infos = lock.to_owned();
+
+            let clear: Vec<Arc<RwLock<PeerInfo>>> = infos.into_iter().filter(|i| {
+                if let Ok(i) = i.try_read() {
+                    i.status() != ConnectionStatus::Dropped
+                }
+                else {
+                    true
+                }
+            }).collect();
+
+            *lock = clear;
+        }
+
+        if self.torrent_info.torrent_peers.read().await.len() < 10 {
+            let peers = self.send_message_to_trackers(TrackerEvent::PeriodicRequest, true).await;
+            self.add_peers(peers).await;
+        }
+    }
+
+    async fn send_message_to_trackers(&mut self, message: TrackerEvent, force: bool) -> Vec<SocketAddrV4> {
+        let mut result = Vec::new();
+
+        for tracker in self.trackers.iter_mut() {
+            match tracker {
+                TrackerKind::Tcp(tracker) => {
+                    let message = {
+                        if tracker.is_announced() {
+                            &message
+                        }
+                        else {
+                            &TrackerEvent::Started
+                        }
+                    };
+
+                    if let Some(peers) = tracker.send_message(message, force).await {
+                        for peer in peers {
+                            if !result.contains(&peer) {
+                                result.push(peer);
                             }
                         }
                     }
-                }
-    
-                *lock = clear;
+                },
+                TrackerKind::Udp => unimplemented!()
             }
-    
-            std::thread::sleep(std::time::Duration::from_millis(5));
         }
+
+        result
     }
 
     async fn build_file_list(files_data: &[(std::string::String, u64)], piece_len: usize) -> Vec<File> {
