@@ -172,11 +172,10 @@ impl Engine {
             bitfield_client: Arc::new(RwLock::new(Bitfield::empty(pieces)))
         };
 
-        let mut torrent_info = Arc::new(torrent_info);
-
-        utils::check_torrent(&mut torrent_info).await;
-
+        let torrent_info = Arc::new(torrent_info);
         let trackers = tracker::create_trackers(trackers_list, torrent_info.clone());
+
+        utils::check_torrent(torrent_info.clone()).await;
 
         Engine {
             trackers,

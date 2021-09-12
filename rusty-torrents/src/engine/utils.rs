@@ -49,7 +49,7 @@ pub async fn write_piece(info: Arc<TorrentInfo>, data: &[u8], file_idx: &mut usi
     }
 }
 
-pub async fn check_torrent(info: &mut Arc<TorrentInfo>) {
+pub async fn check_torrent(info: Arc<TorrentInfo>) {
     let hashes = info.data.info().pieces().to_vec();
     let total_hashes = hashes.len();
 
