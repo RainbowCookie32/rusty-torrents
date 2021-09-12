@@ -51,24 +51,23 @@ pub async fn write_piece(info: Arc<TorrentInfo>, data: &[u8], file_idx: &mut usi
 
 pub async fn check_torrent(info: Arc<TorrentInfo>) {
     let hashes = info.data.info().pieces().to_vec();
-    let total_hashes = hashes.len();
 
     let mut current_file = 0;
     let mut current_piece = 0;
     let mut current_file_offset = 0;
 
-    while current_piece != total_hashes {
+    while current_piece < hashes.len() {
         let start_file = current_file;
-        let start_position = current_file_offset as usize;
-        let filesize = info.torrent_files.write().await[current_file].file_mut().metadata().await.unwrap().len() as usize;
-        
-        let piece = read_piece(info.clone(), current_file, current_file_offset).await;
+        let start_offset = current_file_offset as usize;
         let piece_hash = hashes[current_piece].as_slice();
-        let end_position = current_file_offset as usize + piece.len();
+        let file_size = info.torrent_files.read().await[current_file].get_file_size().await as usize;
+        
+        let piece_data = read_piece(info.clone(), current_file, current_file_offset).await;
+        let end_offset = current_file_offset as usize + piece_data.len();
 
-        match end_position.cmp(&filesize) {
+        match end_offset.cmp(&file_size) {
             std::cmp::Ordering::Greater => {
-                let missing_data = end_position - filesize;
+                let missing_data = end_offset - file_size;
 
                 current_file += 1;
                 current_file_offset = missing_data;
@@ -77,11 +76,11 @@ pub async fn check_torrent(info: Arc<TorrentInfo>) {
                 current_file += 1;
                 current_file_offset = 0;    
             }
-            std::cmp::Ordering::Less => current_file_offset += piece.len()
+            std::cmp::Ordering::Less => current_file_offset += piece_data.len()
         }
 
-        let finished = Sha1::from(&piece).digest().bytes() == piece_hash;
-        let piece = Piece::new(piece.len(), piece_hash.to_owned(), start_file, start_position, finished);
+        let finished = Sha1::from(&piece_data).digest().bytes() == piece_hash;
+        let piece = Piece::new(piece_data.len(), piece_hash.to_owned(), start_file, start_offset, finished);
 
         if finished {
             info.bitfield_client.write().await.piece_finished(current_piece as u32);

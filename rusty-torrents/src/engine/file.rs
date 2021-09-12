@@ -51,7 +51,15 @@ impl File {
         buffer
     }
 
-    // Get a mutable reference to the file's file.
+    pub async fn get_file_size(&self) -> u64 {
+        if let Ok(metadata) = self.file.metadata().await {
+            metadata.len()
+        }
+        else {
+            0
+        }
+    }
+
     pub fn file_mut(&mut self) -> &mut fs::File {
         &mut self.file
     }
