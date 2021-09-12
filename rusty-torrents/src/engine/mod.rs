@@ -4,7 +4,8 @@ mod piece;
 mod utils;
 mod tracker;
 
-use std::{net::SocketAddrV4, sync::Arc};
+use std::sync::Arc;
+use std::net::SocketAddrV4;
 
 use rand::Rng;
 use rusty_parser::ParsedTorrent;
