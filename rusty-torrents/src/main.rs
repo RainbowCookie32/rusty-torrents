@@ -24,13 +24,13 @@ async fn main() {
         .get_matches()
     ;
 
-    let subscriber = FmtSubscriber::builder()
+    let _subscriber = FmtSubscriber::builder()
         .with_max_level(Level::TRACE)
         .finish()
     ;
 
-    tracing::subscriber::set_global_default(subscriber)
-        .expect("Failed to setup default subscriber!");
+    /*tracing::subscriber::set_global_default(subscriber)
+        .expect("Failed to setup default subscriber!");*/
 
     let (stop_tx, stop_rx) = oneshot::channel();
     
