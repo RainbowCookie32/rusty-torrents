@@ -20,7 +20,7 @@ use peer::{Bitfield, ConnectionStatus, Peer, PeerInfo};
 
 pub struct TorrentInfo {
     data: ParsedTorrent,
-    piece_length: usize,
+    piece_length: u64,
 
     pub total_uploaded: Arc<RwLock<usize>>,
     pub total_downloaded: Arc<RwLock<usize>>,
@@ -138,7 +138,7 @@ pub struct Engine {
 impl Engine {
     pub async fn init(data: Vec<u8>, stop_rx: Receiver<()>) -> Engine {
         let data = ParsedTorrent::new(data);
-        let piece_length = data.info().piece_length() as usize;
+        let piece_length = data.info().piece_length();
 
         let trackers_list = {
             let mut list = vec![data.announce().clone()];
@@ -345,11 +345,11 @@ impl Engine {
         result
     }
 
-    async fn build_file_list(files_data: &[(std::string::String, u64)], piece_len: usize) -> Vec<File> {
+    async fn build_file_list(files_data: &[(std::string::String, u64)], piece_length: u64) -> Vec<File> {
         let mut list = Vec::new();
 
         for (filename, size) in files_data {
-            list.push(File::new(filename.to_string(), *size as usize, piece_len).await);
+            list.push(File::new(filename.to_string(), *size, piece_length).await);
         }
 
         list
