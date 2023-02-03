@@ -4,15 +4,15 @@ use tokio::io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt, SeekFrom};
 
 pub struct File {
     file: fs::File,
-    piece_len: usize
+    piece_length: u64
 }
 
 impl File {
-    pub async fn new(filename: String, size: usize, piece_len: usize) -> File {
+    pub async fn new(filename: String, size: u64, piece_length: u64) -> File {
         let mut path = dirs::download_dir().unwrap();
         path.push(filename);
 
-        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        tokio::fs::create_dir_all(path.parent().unwrap()).await.expect("Failed to create directory for file.");
 
         let mut file = OpenOptions::new()
             .read(true)
@@ -23,14 +23,14 @@ impl File {
             .unwrap()
         ;
 
-        if file.metadata().await.unwrap().len() < size as u64 {
-            file.seek(SeekFrom::Start(size as u64 - 1)).await.unwrap();
+        if file.metadata().await.unwrap().len() < size {
+            file.seek(SeekFrom::Start(size - 1)).await.unwrap();
             file.write_all(&[0]).await.unwrap();
         }
 
         File {
             file,
-            piece_len
+            piece_length
         }
     }
 
@@ -39,11 +39,11 @@ impl File {
         self.file.seek(SeekFrom::Start(offset)).await.unwrap();
 
         let mut buffer = {
-            if offset + self.piece_len as u64 > filesize {
+            if offset + self.piece_length > filesize {
                 vec![0; (filesize - offset) as usize]
             }
             else {
-                vec![0; self.piece_len]
+                vec![0; self.piece_length as usize]
             }
         };
 
