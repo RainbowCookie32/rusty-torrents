@@ -66,10 +66,10 @@ impl TcpTracker {
         let info_hash = urlencoding::encode_binary(info.info_hash());
 
         let piece_size = self.info.piece_length;
-        let total_size = piece_size * self.info.torrent_pieces.read().await.len();
+        let total_size = piece_size * self.info.torrent_pieces.read().await.len() as u64;
 
         // This doesn't consider a smaller final piece, but I don't think it *really* matters.
-        let missing = self.info.piece_length * self.info.get_missing_pieces_count().unwrap_or(self.info.get_pieces_count().await);
+        let missing = self.info.piece_length * self.info.get_missing_pieces_count().unwrap_or(self.info.get_pieces_count().await) as u64;
         let downloaded = total_size - missing;
 
         let tracker_query = format!(

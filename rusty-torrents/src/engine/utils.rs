@@ -8,7 +8,7 @@ use crate::engine::TorrentInfo;
 use crate::engine::piece::Piece;
 
 pub async fn read_piece(info: Arc<TorrentInfo>, start_file: usize, start_position: usize) -> Vec<u8> {
-    let piece_length = info.piece_length;
+    let piece_length = info.piece_length as usize;
     let last_file = start_file == info.torrent_files.read().await.len() - 1;
     let mut piece = info.torrent_files.write().await[start_file].read_piece(start_position as u64).await;
                     

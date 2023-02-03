@@ -23,7 +23,7 @@ pub fn create_trackers(trackers: Vec<String>, info: Arc<TorrentInfo>) -> Vec<Tra
 
     for tracker in trackers {
         if tracker.starts_with("udp:") {
-            println!("UDP tracker found, ignoring... ({})", tracker);
+            // println!("UDP tracker found, ignoring... ({})", tracker);
         }
         else {
             // TODO: bruh
