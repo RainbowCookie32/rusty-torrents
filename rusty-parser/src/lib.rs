@@ -6,7 +6,7 @@ pub enum BEncodeType {
     BString { value: String, bytes: Vec<u8> },
 
     BList { entries: Vec<BEncodeType> },
-    BDictionary { entries: HashMap<String, BEncodeType>, hash: [u8; 20] }
+    BDictionary { entries: HashMap<String, BEncodeType>, hash: [u8; 20], hash_string: String }
 }
 
 impl BEncodeType {
@@ -130,9 +130,12 @@ impl BEncodeType {
         }
 
         let dictionary_bytes = &data[start as usize - 1..*position];
-        let hash = sha1::Sha1::from(dictionary_bytes).digest().bytes();
+        let dictionary_sha1 = sha1::Sha1::from(dictionary_bytes);
 
-        BEncodeType::BDictionary { entries, hash }
+        let hash = dictionary_sha1.digest().bytes();
+        let hash_string = dictionary_sha1.hexdigest();
+
+        BEncodeType::BDictionary { entries, hash, hash_string }
     }
 
     pub fn get_int(&self) -> u64 {
@@ -186,6 +189,15 @@ impl BEncodeType {
         }
         else {
             [0; 20]
+        }
+    }
+
+    pub fn get_dictionary_hash_string(&self) -> String {
+        if let BEncodeType::BDictionary { hash_string, ..} = self {
+            hash_string.clone()
+        }
+        else {
+            String::new()
         }
     }
 }
@@ -292,6 +304,7 @@ impl ParsedTorrent {
 
 pub struct TorrentInfo {
     info_hash: [u8; 20],
+    info_hash_str: String,
 
     length: u64,
     name: String,
@@ -304,6 +317,8 @@ pub struct TorrentInfo {
 impl TorrentInfo {
     pub fn new(info: &BEncodeType) -> TorrentInfo {
         let info_hash = info.get_dictionary_hash();
+        let info_hash_str = info.get_dictionary_hash_string();
+
         let info = info.get_dictionary();
 
         let length = {
@@ -354,6 +369,7 @@ impl TorrentInfo {
 
         TorrentInfo {
             info_hash,
+            info_hash_str,
 
             length,
             name,
@@ -367,6 +383,10 @@ impl TorrentInfo {
     /// Get a reference to the torrent info's info hash.
     pub fn info_hash(&self) -> &[u8; 20] {
         &self.info_hash
+    }
+
+    pub fn info_hash_str(&self) -> &str {
+        &self.info_hash_str
     }
 
     /// Get a reference to the torrent info's length.
