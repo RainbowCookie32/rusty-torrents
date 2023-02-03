@@ -219,7 +219,15 @@ impl ParsedTorrent {
         
             let announce_list = {
                 if let Some(entry) = entries.get("announce-list") {
-                    entry.get_list().iter().map(|e| e.get_string()).collect()
+                    let list = entry.get_list();
+
+                    list
+                        .iter()
+                        .map(| tracker_list | {
+                            tracker_list.get_list()[0].clone()
+                        })
+                        .map(| tracker | tracker.get_string())
+                        .collect()
                 }
                 else {
                     Vec::new()
