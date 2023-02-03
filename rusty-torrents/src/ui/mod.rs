@@ -3,6 +3,7 @@ use std::sync::Arc;
 use std::io::stdout;
 use std::time::Instant;
 
+use bytesize::ByteSize;
 use tui::Frame;
 use tui::terminal::Terminal;
 use tui::backend::CrosstermBackend;
@@ -286,9 +287,9 @@ impl App {
 
         let row = Row::new(vec![
             Cell::from(Span::styled(name, Style::default())),
-            Cell::from(Span::styled(App::bytes_data(self.total_size as u32), Style::default())),
-            Cell::from(Span::styled(App::bytes_data(self.total_downloaded as u32), Style::default())),
-            Cell::from(Span::styled(App::bytes_rate(rate as u32), Style::default())),
+            Cell::from(Span::styled(App::bytes_data(self.total_size as u64), Style::default())),
+            Cell::from(Span::styled(App::bytes_data(self.total_downloaded as u64), Style::default())),
+            Cell::from(Span::styled(App::bytes_rate(rate as u64), Style::default())),
             Cell::from(Span::styled(peers.to_string(), Style::default()))
         ]);
 
@@ -335,7 +336,7 @@ impl App {
         let mut rows = Vec::new();
 
         for (file, size) in self.torrent_info.data().get_files() {
-            rows.push(Row::new(vec![file.clone(), App::bytes_data(*size as u32)]));
+            rows.push(Row::new(vec![file.clone(), App::bytes_data(*size as u64)]));
         }
 
         let table = Table::new(rows)
@@ -376,9 +377,9 @@ impl App {
                     rows.push(Row::new(vec![
                         lock.address().to_string(),
                         format!("{}", lock.status()),
-                        App::bytes_data(lock.downloaded_total() as u32),
-                        App::bytes_data(lock.uploaded_total() as u32),
-                        App::bytes_rate(rate as u32),
+                        App::bytes_data(lock.downloaded_total() as u64),
+                        App::bytes_data(lock.uploaded_total() as u64),
+                        App::bytes_rate(rate as u64),
                         {
                             if let Some(message) = lock.last_message_sent() {
                                 format!("{}", message)
@@ -437,8 +438,8 @@ impl App {
             for (i, piece) in pieces.iter().enumerate() {
                 rows.push(Row::new(vec![
                     i.to_string(),
-                    App::bytes_data(piece.get_len() as u32),
-                    App::bytes_data(piece.get_downloaded() as u32),
+                    App::bytes_data(piece.get_len() as u64),
+                    App::bytes_data(piece.get_downloaded() as u64),
                     if piece.requested() {String::from("Yes")} else {String::from("No")},
                     if piece.finished() {String::from("Yes")} else {String::from("No")}
                 ]));
@@ -462,57 +463,14 @@ impl App {
         }
     }
 
-    fn bytes_data(bytes: u32) -> String {
-        let mut bytes = bytes;
-
-        if bytes > 1024 {
-            bytes /= 1024;
-
-            if bytes < 1024 {
-                return format!("{}KB", bytes);
-            }
-            else {
-                bytes /= 1024;
-
-                if bytes < 1024 {
-                    return format!("{}MB", bytes);
-                }
-                else {
-                    bytes /= 1024;
-                    
-                    return format!("{}GB", bytes);
-                }
-            }
-        }
-        else {
-            return format!("{}B", bytes);
-        }
+    fn bytes_data(bytes: u64) -> String {
+        ByteSize::b(bytes).to_string()
     }
 
-    fn bytes_rate(bytes: u32) -> String {
-        let mut bytes = bytes;
-
-        if bytes > 1024 {
-            bytes /= 1024;
-
-            if bytes < 1024 {
-                return format!("{}KB/s", bytes);
-            }
-            else {
-                bytes /= 1024;
-
-                if bytes < 1024 {
-                    return format!("{}MB/s", bytes);
-                }
-                else {
-                    bytes /= 1024;
-                    
-                    return format!("{}GB/s", bytes);
-                }
-            }
-        }
-        else {
-            return format!("{}B/s", bytes);
-        }
+    fn bytes_rate(bytes: u64) -> String {
+        let mut rate_str = ByteSize::b(bytes).to_string();
+        rate_str.push_str("/s");
+        
+        rate_str
     }
 }
