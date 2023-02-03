@@ -394,3 +394,38 @@ impl TorrentInfo {
         self.pieces.as_slice()
     }
 }
+
+mod tests {
+    #[test]
+    fn fedora_torrent() {
+        let file = std::fs::read("../torrents/Fedora-Workstation-Live-x86_64-37.torrent").expect("Failed to load torrent file");
+        let parsed = crate::ParsedTorrent::new(file);
+
+        assert_eq!(parsed.announce(), "http://torrent.fedoraproject.org:6969/announce");
+        assert_eq!(parsed.info().files(), &[
+            (String::from("Fedora-Workstation-Live-x86_64-37/Fedora-Workstation-37-1.7-x86_64-CHECKSUM"), 1062),
+            (String::from("Fedora-Workstation-Live-x86_64-37/Fedora-Workstation-Live-x86_64-37-1.7.iso"), 2037372928),
+        ]);
+        assert_eq!(parsed.info().name(), "Fedora-Workstation-Live-x86_64-37");
+        assert_eq!(parsed.info().piece_length(), 262144);
+
+        assert_eq!(parsed.info().pieces().len(), 7772);
+    }
+
+    #[test]
+    fn ubuntu_torrent() {
+        let file = std::fs::read("../torrents/ubuntu-22.10-desktop-amd64.iso.torrent").expect("Failed to load torrent file");
+        let parsed = crate::ParsedTorrent::new(file);
+
+        assert_eq!(parsed.announce(), "https://torrent.ubuntu.com/announce");
+        assert_eq!(parsed.announce_list(), &vec![
+            "https://torrent.ubuntu.com/announce",
+            "https://ipv6.torrent.ubuntu.com/announce"
+        ]);
+        assert_eq!(parsed.info().files(), &[(String::from("ubuntu-22.10-desktop-amd64.iso"), 4071903232)]);
+        assert_eq!(parsed.info().name(), "ubuntu-22.10-desktop-amd64.iso");
+        assert_eq!(parsed.info().piece_length(), 262144);
+
+        assert_eq!(parsed.info().pieces().len(), 15534);
+    }
+}
