@@ -31,6 +31,8 @@ async fn main() {
 
     tracing::subscriber::set_global_default(subscriber)
         .expect("Failed to setup default subscriber!");
+
+    let (stop_tx, stop_rx) = oneshot::channel();
     
     let torrent_path = matches.value_of("path").expect("No value for torrent provided");
     let torrent_data = std::fs::read(torrent_path).expect("Couldn't open torrent file");
