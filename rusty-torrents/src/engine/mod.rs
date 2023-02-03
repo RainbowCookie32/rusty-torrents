@@ -254,8 +254,7 @@ impl Engine {
                                 break;
                             }
     
-                            tokio::task::yield_now().await;
-                            std::thread::sleep(std::time::Duration::from_millis(1));
+                            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
                         }
                     }
                     else {
