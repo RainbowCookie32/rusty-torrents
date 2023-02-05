@@ -36,17 +36,8 @@ impl Message {
                 1 => Some(Message::Unchoke),
                 2 => Some(Message::Interested),
                 3 => Some(Message::NotInterested),
-
-                4 => {
-                    let piece = data.get_u32();
-                    
-                    Some(Message::Have { piece })
-                }
-                5 => {
-                    let bitfield = Bitfield::from_peer_data(data.to_vec());
-
-                    Some(Message::Bitfield { bitfield })
-                }
+                4 => Some(Message::Have { piece: data.get_u32() }),
+                5 => Some(Message::Bitfield { bitfield: Bitfield::from_peer_data(data.to_vec()) }),
                 6 => {
                     let piece_idx = data.get_u32();
                     let block_offset = data.get_u32();
