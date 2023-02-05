@@ -1,5 +1,6 @@
 mod ui;
 mod engine;
+mod bencode;
 
 use clap::{Arg, App};
 use tokio::sync::oneshot;

@@ -1,10 +1,25 @@
-[workspace]
-resolver = "2"
+[package]
+name = "rusty-torrents"
+version = "0.1.0"
+edition = "2021"
 
-members = [
-    "rusty-parser",
-    "rusty-torrents"
-]
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
-[profile.dev.package.sha1]
-opt-level = 3
+[dependencies]
+dirs = "4.0.0"
+rand = "0.8.4"
+clap = "2.34.0"
+bytes = "1.4.0"
+bytesize = "1.1.0"
+urlencoding = "2.1.2"
+async-trait = "0.1.64"
+
+tui = "0.19.0"
+crossterm = "0.26.0"
+
+tracing = "0.1.37"
+tracing-subscriber = "0.3.16"
+
+sha1 = { version = "0.6.1", features = ["std"] }
+reqwest = { version = "0.11.14", default-features = false, features = ["tokio-native-tls"] }
+tokio = { version = "1.25.0", default-features = false, features = ["rt", "rt-multi-thread", "macros", "fs", "net", "sync", "time"] }

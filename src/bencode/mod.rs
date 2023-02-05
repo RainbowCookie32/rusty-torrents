@@ -2,18 +2,18 @@ use std::collections::HashMap;
 
 #[derive(Debug, Clone)]
 pub enum BEncodeType {
-    BInt { value: u64 },
-    BString { value: String, bytes: Vec<u8> },
+    Int { value: u64 },
+    String { value: String, bytes: Vec<u8> },
 
-    BList { entries: Vec<BEncodeType> },
-    BDictionary { entries: HashMap<String, BEncodeType>, hash: [u8; 20], hash_string: String }
+    List { entries: Vec<BEncodeType> },
+    Dictionary { entries: HashMap<String, BEncodeType>, hash: [u8; 20], hash_string: String }
 }
 
 impl BEncodeType {
     pub fn string(data: &[u8], position: &mut usize) -> BEncodeType {
         let (value, bytes) = BEncodeType::parse_string(data, position);
 
-        BEncodeType::BString { value, bytes }
+        BEncodeType::String { value, bytes }
     }
 
     fn parse_string(data: &[u8], position: &mut usize) -> (String, Vec<u8>) {
@@ -67,7 +67,7 @@ impl BEncodeType {
 
         let value = result.parse().expect("Bad int length.");
 
-        BEncodeType::BInt { value }
+        BEncodeType::Int { value }
     }
 
     pub fn list(data: &[u8], position: &mut usize) -> BEncodeType {
@@ -97,7 +97,7 @@ impl BEncodeType {
             }
         }
 
-        BEncodeType::BList { entries }
+        BEncodeType::List { entries }
     }
 
     pub fn dictionary(data: &[u8], position: &mut usize) -> BEncodeType {
@@ -135,11 +135,11 @@ impl BEncodeType {
         let hash = dictionary_sha1.digest().bytes();
         let hash_string = dictionary_sha1.hexdigest();
 
-        BEncodeType::BDictionary { entries, hash, hash_string }
+        BEncodeType::Dictionary { entries, hash, hash_string }
     }
 
     pub fn get_int(&self) -> u64 {
-        if let BEncodeType::BInt { value } = self {
+        if let BEncodeType::Int { value } = self {
             *value
         }
         else {
@@ -148,7 +148,7 @@ impl BEncodeType {
     }
 
     pub fn get_string(&self) -> String {
-        if let BEncodeType::BString { value, ..} = self {
+        if let BEncodeType::String { value, ..} = self {
             value.clone()
         }
         else {
@@ -157,7 +157,7 @@ impl BEncodeType {
     }
 
     pub fn get_string_bytes(&self) -> Vec<u8> {
-        if let BEncodeType::BString { bytes, ..} = self {
+        if let BEncodeType::String { bytes, ..} = self {
             bytes.clone()
         }
         else {
@@ -166,7 +166,7 @@ impl BEncodeType {
     }
 
     pub fn get_list(&self) -> Vec<BEncodeType> {
-        if let BEncodeType::BList { entries } = self {
+        if let BEncodeType::List { entries } = self {
             entries.clone()
         }
         else {
@@ -175,7 +175,7 @@ impl BEncodeType {
     }
 
     pub fn get_dictionary(&self) -> HashMap<String, BEncodeType> {
-        if let BEncodeType::BDictionary { entries, .. } = self {
+        if let BEncodeType::Dictionary { entries, .. } = self {
             entries.clone()
         }
         else {
@@ -184,7 +184,7 @@ impl BEncodeType {
     }
 
     pub fn get_dictionary_hash(&self) -> [u8; 20] {
-        if let BEncodeType::BDictionary { hash, ..} = self {
+        if let BEncodeType::Dictionary { hash, ..} = self {
             *hash
         }
         else {
@@ -193,7 +193,7 @@ impl BEncodeType {
     }
 
     pub fn get_dictionary_hash_string(&self) -> String {
-        if let BEncodeType::BDictionary { hash_string, ..} = self {
+        if let BEncodeType::Dictionary { hash_string, ..} = self {
             hash_string.clone()
         }
         else {
@@ -419,7 +419,7 @@ mod tests {
     #[test]
     fn fedora_torrent() {
         let file = std::fs::read("../torrents/Fedora-Workstation-Live-x86_64-37.torrent").expect("Failed to load torrent file");
-        let parsed = crate::ParsedTorrent::new(file);
+        let parsed = super::ParsedTorrent::new(file);
 
         assert_eq!(parsed.announce(), "http://torrent.fedoraproject.org:6969/announce");
         assert_eq!(parsed.info().files(), &[
@@ -435,7 +435,7 @@ mod tests {
     #[test]
     fn ubuntu_torrent() {
         let file = std::fs::read("../torrents/ubuntu-22.10-desktop-amd64.iso.torrent").expect("Failed to load torrent file");
-        let parsed = crate::ParsedTorrent::new(file);
+        let parsed = super::ParsedTorrent::new(file);
 
         assert_eq!(parsed.announce(), "https://torrent.ubuntu.com/announce");
         assert_eq!(parsed.announce_list(), &vec![

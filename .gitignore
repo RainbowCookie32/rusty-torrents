@@ -1,5 +1,6 @@
-target
-.vscode
+*.torrent
+!Fedora-Workstation-Live-x86_64-37.torrent
+!ubuntu-22.10-desktop-amd64.iso.torrent
 
-*/target
-*/.vscode
+.vscode
+target

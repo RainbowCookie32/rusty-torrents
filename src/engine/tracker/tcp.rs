@@ -3,10 +3,10 @@ use std::time::{Duration, Instant};
 use std::net::{Ipv4Addr, SocketAddrV4};
 
 use bytes::Buf;
-use rusty_parser::BEncodeType;
 
 use crate::engine::TorrentInfo;
 use crate::engine::tracker::TrackerEvent;
+use crate::bencode::BEncodeType;
 
 pub struct TcpTracker {
     client_id: String,

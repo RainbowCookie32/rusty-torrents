@@ -8,7 +8,6 @@ use std::sync::Arc;
 use std::net::SocketAddrV4;
 
 use rand::Rng;
-use rusty_parser::ParsedTorrent;
 
 use tokio::sync::RwLock;
 use tokio::sync::oneshot::Receiver;
@@ -17,6 +16,8 @@ use file::File;
 use piece::Piece;
 use tracker::{TrackerKind, TrackerEvent};
 use peer::{Bitfield, ConnectionStatus, Peer, PeerInfo};
+
+use crate::bencode::ParsedTorrent;
 
 pub struct TorrentInfo {
     data: ParsedTorrent,
