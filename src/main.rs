@@ -40,12 +40,13 @@ async fn main() {
 
     let torrent_engine = engine::Engine::init(torrent_data, stop_rx).await;
     let torrent_info = torrent_engine.info();
+    let progress_rx = torrent_engine.get_progress_rx();
 
     tokio::spawn(async move {
         let mut torrent_engine = torrent_engine;
         torrent_engine.start_torrent().await;
     });
 
-    let app = ui::App::new(stop_tx, torrent_info);
+    let app = ui::App::new(stop_tx, torrent_info, progress_rx).await;
     app.draw();
 }

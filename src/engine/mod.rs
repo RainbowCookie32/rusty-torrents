@@ -11,6 +11,7 @@ use rand::Rng;
 
 use tokio::sync::mpsc;
 use tokio::sync::oneshot;
+use tokio::sync::broadcast;
 use tokio::sync::RwLock;
 
 use file::File;
@@ -20,7 +21,7 @@ use peer::{Bitfield, ConnectionStatus, Peer, PeerInfo};
 use crate::bencode::ParsedTorrent;
 
 use self::tracker::TrackersHandler;
-use self::tracker::TransferProgress;
+pub use self::tracker::TransferProgress;
 
 pub struct TorrentInfo {
     data: ParsedTorrent,
@@ -135,7 +136,7 @@ impl TorrentInfo {
 pub struct Engine {
     stop_rx: oneshot::Receiver<()>,
     peers_rx: mpsc::Receiver<Vec<SocketAddrV4>>,
-    transfer_progress_tx: mpsc::Sender<TransferProgress>,
+    transfer_progress_tx: broadcast::Sender<TransferProgress>,
 
     torrent_info: Arc<TorrentInfo>,
 }
@@ -177,13 +178,30 @@ impl Engine {
         let torrent_info = Arc::new(torrent_info);
         
         let (peers_tx, peers_rx) = mpsc::channel(5);
-        let (transfer_progress_tx, transfer_progress_rx) = mpsc::channel(30);
+        let (transfer_progress_tx, transfer_progress_rx) = broadcast::channel(5);
 
         utils::check_torrent(torrent_info.clone()).await;
 
+        let total: usize = torrent_info.torrent_pieces().read().await
+            .iter()
+            .map(| piece | piece.get_len())
+            .sum()
+        ;
+
+        let downloaded: usize = torrent_info.torrent_pieces().read().await
+            .iter()
+            .filter(| piece | piece.finished())
+            .map(| piece | piece.get_len())
+            .sum()
+        ;
+        
+        let progress = TransferProgress::new((total - downloaded) as u64, 0, 0);
+
+        transfer_progress_tx.send(progress.clone()).unwrap();
+
         let trackers_handler = TrackersHandler::init(
             *torrent_info.data().info().info_hash(),
-            TransferProgress::empty(),
+            progress,
             trackers_list,
             peers_tx,
             transfer_progress_rx
@@ -206,6 +224,10 @@ impl Engine {
         self.torrent_info.clone()
     }
 
+    pub fn get_progress_rx(&self) -> broadcast::Receiver<TransferProgress> {
+        self.transfer_progress_tx.subscribe()
+    }
+
     pub async fn start_torrent(&mut self) {
         let mut complete = false;
 
@@ -226,6 +248,7 @@ impl Engine {
 
                 let info_peer = info.clone();
                 let info_torrent = self.torrent_info.clone();
+                let tx = self.transfer_progress_tx.clone();
     
                 tokio::spawn(async move {
                     let info_peer = info_peer;
@@ -233,7 +256,7 @@ impl Engine {
 
                     info_peer.write().await.set_status(ConnectionStatus::Connecting);
 
-                    if let Some(mut peer) = Peer::connect(info_peer.clone(), info_torrent.clone()).await {
+                    if let Some(mut peer) = Peer::connect(info_peer.clone(), info_torrent.clone(), tx).await {
                         info_peer.write().await.set_status(ConnectionStatus::Connected);
 
                         loop {

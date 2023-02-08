@@ -5,12 +5,13 @@ use bytes::Buf;
 use reqwest::Client;
 
 use tokio::sync::mpsc;
+use tokio::sync::broadcast;
 use tokio::net::UdpSocket;
 
 use crate::bencode::BEncodeType;
 
 type PeersTx = mpsc::Sender<Vec<SocketAddrV4>>;
-type ProgressRx = mpsc::Receiver<TransferProgress>;
+type ProgressRx = broadcast::Receiver<TransferProgress>;
 
 enum TrackerKind {
     Tcp,
@@ -18,6 +19,7 @@ enum TrackerKind {
 }
 
 // TODO: This struct would be better suited to a transfer.rs file or something.
+#[derive(Debug, Clone)]
 pub struct TransferProgress {
     left: u64,
     uploaded: u64,
@@ -33,8 +35,8 @@ impl TransferProgress {
         }
     }
 
-    pub fn empty() -> TransferProgress {
-        TransferProgress { left: 0, uploaded: 0, downloaded: 0 }
+    pub fn left(&self) -> u64 {
+        self.left
     }
 }
 
@@ -45,7 +47,7 @@ pub struct TrackersHandler {
     trackers: Vec<Tracker>,
 
     new_peers_tx: mpsc::Sender<Vec<SocketAddrV4>>,
-    transfer_progress_rx: mpsc::Receiver<TransferProgress>
+    transfer_progress_rx: broadcast::Receiver<TransferProgress>
 }
 
 impl TrackersHandler {

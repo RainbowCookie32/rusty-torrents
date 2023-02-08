@@ -7,12 +7,14 @@ use std::net::SocketAddrV4;
 use std::time::{Duration, Instant};
 
 use tokio::sync::RwLock;
+use tokio::sync::broadcast;
 
 use message::Message;
 use connection::PeerConnection;
 
 use crate::engine::utils;
 use crate::engine::TorrentInfo;
+use crate::engine::tracker::TransferProgress;
 
 pub struct Peer {
     connection: Box<dyn PeerConnection + Send>,
@@ -33,11 +35,13 @@ pub struct Peer {
     requested_piece: Option<usize>,
 
     timer_last_message: Instant,
-    timer_received_data: Instant
+    timer_received_data: Instant,
+
+    transfer_progress_tx: broadcast::Sender<TransferProgress>
 }
 
 impl Peer {
-    pub async fn connect(info_peer: Arc<RwLock<PeerInfo>>, info_torrent: Arc<TorrentInfo>) -> Option<Peer> {
+    pub async fn connect(info_peer: Arc<RwLock<PeerInfo>>, info_torrent: Arc<TorrentInfo>, tx: broadcast::Sender<TransferProgress>) -> Option<Peer> {
         let address = info_peer.read().await.address();
 
         if let Some(mut connection) = connection::create_connection(&address).await {
@@ -72,7 +76,9 @@ impl Peer {
                 requested_piece: None,
 
                 timer_last_message: Instant::now(),
-                timer_received_data: Instant::now()
+                timer_received_data: Instant::now(),
+
+                transfer_progress_tx: tx
             };
 
             Some(peer)
@@ -265,6 +271,22 @@ impl Peer {
                     self.awaiting_response = false;
 
                     if let Some(piece_data) = piece_data {
+                        let total: usize = self.info_torrent.torrent_pieces().read().await
+                            .iter()
+                            .map(| piece | piece.get_len())
+                            .sum()
+                        ;
+
+                        let downloaded: usize = self.info_torrent.torrent_pieces().read().await
+                            .iter()
+                            .filter(| piece | piece.finished())
+                            .map(| piece | piece.get_len())
+                            .sum()
+                        ;
+
+                        let progress = TransferProgress::new((total - downloaded) as u64, 0, 0);
+
+                        self.transfer_progress_tx.send(progress).expect("failed to send transfer progress");
                         utils::write_piece(self.info_torrent.clone(), &piece_data, &mut file_idx, &mut file_position).await;
                     }
                 }

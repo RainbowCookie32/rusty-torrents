@@ -8,7 +8,8 @@ use tui::Frame;
 use tui::terminal::Terminal;
 use tui::backend::CrosstermBackend;
 
-use tokio::sync::oneshot::Sender;
+use tokio::sync::oneshot;
+use tokio::sync::broadcast;
 
 use tui::text::{Span, Spans};
 use tui::style::{Color, Style};
@@ -21,13 +22,7 @@ use crossterm::terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScree
 
 use crate::engine::TorrentInfo;
 use crate::engine::peer::PeerInfo;
-
-struct TransferInfo {
-    size: usize,
-    downloaded: usize,
-
-    peers: Vec<PeerInfo>
-}
+use crate::engine::TransferProgress;
 
 pub struct App {
     selected_tab: usize,
@@ -36,30 +31,27 @@ pub struct App {
     peers_state: TableState,
     piece_state: TableState,
 
-    transfer_info: TransferInfo,
+    transfer_size: usize,
+    transfer_peers: Vec<PeerInfo>,
+    transfer_progress: TransferProgress,
 
-    stop_tx: Sender<()>,
+    stop_tx: oneshot::Sender<()>,
+    progress_rx: broadcast::Receiver<TransferProgress>,
 
     start_time: Instant,
     torrent_info: Arc<TorrentInfo>
 }
 
 impl App {
-    pub fn new(stop_tx: Sender<()>, torrent_info: Arc<TorrentInfo>) -> App {
-        let (size, downloaded, peers) = {
-            let mut total = 0;
-            let mut downloaded = 0;
+    pub async fn new(stop_tx: oneshot::Sender<()>, torrent_info: Arc<TorrentInfo>, rx: broadcast::Receiver<TransferProgress>) -> App {
+        let transfer_size = torrent_info.torrent_pieces().read().await
+            .iter()
+            .map(| piece | piece.get_len())
+            .sum()
+        ;
 
-            let pieces = torrent_info.torrent_pieces();
-            let pieces = pieces.try_read().unwrap();
-            
-            for piece in pieces.iter() {
-                total += piece.get_len();
-                downloaded += piece.get_downloaded();
-            }
-
-            (total, downloaded, Vec::new())
-        };
+        let mut rx = rx;
+        let transfer_progress = rx.recv().await.unwrap();
 
         App {
             selected_tab: 0,
@@ -68,14 +60,12 @@ impl App {
             peers_state: TableState::default(),
             piece_state: TableState::default(),
 
-            transfer_info: TransferInfo {
-                size,
-                downloaded,
-
-                peers
-            },
+            transfer_size,
+            transfer_peers: Vec::new(),
+            transfer_progress,
 
             stop_tx,
+            progress_rx: rx,
             
             start_time: Instant::now(),
             torrent_info
@@ -99,6 +89,10 @@ impl App {
         loop {
             let mut should_draw = false;
             let timeout = tick_rate.checked_sub(last_tick.elapsed()).unwrap_or_else(|| std::time::Duration::from_secs(0));
+
+            if let Ok(progress) = self.progress_rx.try_recv() {
+                self.transfer_progress = progress;
+            }
     
             if let Ok(event) = crossterm::event::poll(timeout) {
                 if event {
@@ -201,7 +195,7 @@ impl App {
                 (&mut self.files_state, self.torrent_info.data().get_files().len())
             }
             else if self.selected_tab == 1 {
-                let max = self.transfer_info.peers.len();
+                let max = self.transfer_peers.len();
                 (&mut self.peers_state, max)
             }
             else {
@@ -240,20 +234,8 @@ impl App {
         ;
 
         let name = self.torrent_info.data().get_name();
-        
-        let progress = {
-            if let Ok(pieces) = self.torrent_info.torrent_pieces().try_read() {
-                let mut downloaded = 0;
-
-                for piece in pieces.iter() {
-                    downloaded += piece.get_downloaded();
-                }
-
-                self.transfer_info.downloaded = downloaded;
-            }
-
-            ((self.transfer_info.downloaded as f32 / self.transfer_info.size as f32) * 100.0) as u16
-        };
+        let downloaded = self.transfer_size - self.transfer_progress.left() as usize;
+        let progress = ((downloaded as f32 / self.transfer_size as f32) * 100.0) as u16;
 
         let rate = {
             let now = Instant::now();
@@ -279,12 +261,12 @@ impl App {
             .gauge_style(Style::default().fg(Color::Magenta).bg(Color::White))
         ;
         
-        let peers = self.transfer_info.peers.len();
+        let peers = self.transfer_peers.len();
 
         let row = Row::new(vec![
             Cell::from(Span::styled(name, Style::default())),
-            Cell::from(Span::styled(App::bytes_data(self.transfer_info.size as u64), Style::default())),
-            Cell::from(Span::styled(App::bytes_data(self.transfer_info.downloaded as u64), Style::default())),
+            Cell::from(Span::styled(App::bytes_data(self.transfer_size as u64), Style::default())),
+            Cell::from(Span::styled(App::bytes_data(downloaded as u64), Style::default())),
             Cell::from(Span::styled(App::bytes_rate(rate as u64), Style::default())),
             Cell::from(Span::styled(peers.to_string(), Style::default()))
         ]);
@@ -354,14 +336,14 @@ impl App {
 
         {
             if let Ok(lock) = self.torrent_info.torrent_peers().try_read() {
-                self.transfer_info.peers = lock.iter()
+                self.transfer_peers = lock.iter()
                     .filter_map(| peer | peer.try_read().ok())
                     .map(| peer | peer.clone())
                     .collect()
             }
         }
 
-        for peer in self.transfer_info.peers.iter() {
+        for peer in self.transfer_peers.iter() {
             let now = Instant::now();
                 let start_time = peer.start_time();
                 let elapsed = now.checked_sub(start_time.elapsed()).unwrap().elapsed();
