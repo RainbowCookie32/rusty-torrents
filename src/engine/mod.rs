@@ -9,15 +9,18 @@ use std::net::SocketAddrV4;
 
 use rand::Rng;
 
+use tokio::sync::mpsc;
+use tokio::sync::oneshot;
 use tokio::sync::RwLock;
-use tokio::sync::oneshot::Receiver;
 
 use file::File;
 use piece::Piece;
-use tracker::{TrackerKind, TrackerEvent};
 use peer::{Bitfield, ConnectionStatus, Peer, PeerInfo};
 
 use crate::bencode::ParsedTorrent;
+
+use self::tracker::TrackersHandler;
+use self::tracker::TransferProgress;
 
 pub struct TorrentInfo {
     data: ParsedTorrent,
@@ -130,29 +133,27 @@ impl TorrentInfo {
 }
 
 pub struct Engine {
-    trackers: Vec<TrackerKind>,
-    torrent_info: Arc<TorrentInfo>,
+    stop_rx: oneshot::Receiver<()>,
+    peers_rx: mpsc::Receiver<Vec<SocketAddrV4>>,
+    transfer_progress_tx: mpsc::Sender<TransferProgress>,
 
-    stop_rx: Receiver<()>
+    torrent_info: Arc<TorrentInfo>,
 }
 
 impl Engine {
-    pub async fn init(data: Vec<u8>, stop_rx: Receiver<()>) -> Engine {
+    pub async fn init(data: Vec<u8>, stop_rx: oneshot::Receiver<()>) -> Engine {
         let data = ParsedTorrent::new(data);
         let piece_length = data.info().piece_length();
-
-        let trackers_list = {
-            let mut list = vec![data.announce().clone()];
-            let announce_list = data.announce_list();
-
-            for item in announce_list {
-                if !item.is_empty() {
-                    list.push(item.clone());
-                }
-            }
-
-            list
+        
+        let mut trackers_list: Vec<String> = {
+            data.announce_list()
+                .iter()
+                .filter(| url | !url.is_empty())
+                .map(| url | url.to_owned())
+                .collect()
         };
+
+        trackers_list.insert(0, data.announce().to_owned());
         
         let torrent_files = Engine::build_file_list(data.info().files(), piece_length).await;
         let torrent_files = Arc::new(RwLock::new(torrent_files));
@@ -174,15 +175,30 @@ impl Engine {
         };
 
         let torrent_info = Arc::new(torrent_info);
-        let trackers = tracker::create_trackers(trackers_list, torrent_info.clone());
+        
+        let (peers_tx, peers_rx) = mpsc::channel(5);
+        let (transfer_progress_tx, transfer_progress_rx) = mpsc::channel(30);
 
         utils::check_torrent(torrent_info.clone()).await;
 
-        Engine {
-            trackers,
-            torrent_info,
+        let trackers_handler = TrackersHandler::init(
+            *torrent_info.data().info().info_hash(),
+            TransferProgress::empty(),
+            trackers_list,
+            peers_tx,
+            transfer_progress_rx
+        );
 
-            stop_rx
+        tokio::spawn(async move {
+            trackers_handler.start().await;
+        });
+
+        Engine {
+            stop_rx,
+            peers_rx,
+            transfer_progress_tx,
+
+            torrent_info
         }
     }
 
@@ -195,11 +211,13 @@ impl Engine {
 
         loop {
             if self.stop_rx.try_recv().is_ok() {
-                self.send_message_to_trackers(TrackerEvent::Stopped, true).await;
+                // self.send_message_to_trackers(TrackerEvent::Stopped, true).await;
                 break;
             }
 
-            self.send_message_to_trackers(TrackerEvent::PeriodicRequest, false).await;
+            if let Ok(list) = self.peers_rx.try_recv() {
+                self.add_peers(list).await;
+            }
 
             for info in self.torrent_info.torrent_peers.read().await.iter() {
                 if info.read().await.status() != ConnectionStatus::Disconnected {
@@ -266,7 +284,7 @@ impl Engine {
 
             if self.torrent_info.is_complete() && !complete {
                 complete = true;
-                self.send_message_to_trackers(TrackerEvent::Completed, true).await;
+                // self.send_message_to_trackers(TrackerEvent::Completed, true).await;
             }
             
             self.clear_peers_list().await;
@@ -309,41 +327,6 @@ impl Engine {
 
             *lock = clear;
         }
-
-        if self.torrent_info.torrent_peers.read().await.len() < 10 {
-            let peers = self.send_message_to_trackers(TrackerEvent::PeriodicRequest, true).await;
-            self.add_peers(peers).await;
-        }
-    }
-
-    async fn send_message_to_trackers(&mut self, message: TrackerEvent, force: bool) -> Vec<SocketAddrV4> {
-        let mut result = Vec::new();
-
-        for tracker in self.trackers.iter_mut() {
-            match tracker {
-                TrackerKind::Tcp(tracker) => {
-                    let message = {
-                        if tracker.is_announced() {
-                            &message
-                        }
-                        else {
-                            &TrackerEvent::Started
-                        }
-                    };
-
-                    if let Some(peers) = tracker.send_message(message, force).await {
-                        for peer in peers {
-                            if !result.contains(&peer) {
-                                result.push(peer);
-                            }
-                        }
-                    }
-                },
-                TrackerKind::Udp => unimplemented!()
-            }
-        }
-
-        result
     }
 
     async fn build_file_list(files_data: &[(std::string::String, u64)], piece_length: u64) -> Vec<File> {
