@@ -20,6 +20,14 @@ use crossterm::event::{DisableMouseCapture, EnableMouseCapture, Event, KeyCode, 
 use crossterm::terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen};
 
 use crate::engine::TorrentInfo;
+use crate::engine::peer::PeerInfo;
+
+struct TransferInfo {
+    size: usize,
+    downloaded: usize,
+
+    peers: Vec<PeerInfo>
+}
 
 pub struct App {
     selected_tab: usize,
@@ -28,8 +36,7 @@ pub struct App {
     peers_state: TableState,
     piece_state: TableState,
 
-    total_size: usize,
-    total_downloaded: usize,
+    transfer_info: TransferInfo,
 
     stop_tx: Sender<()>,
 
@@ -39,7 +46,7 @@ pub struct App {
 
 impl App {
     pub fn new(stop_tx: Sender<()>, torrent_info: Arc<TorrentInfo>) -> App {
-        let (total_size, total_downloaded) = {
+        let (size, downloaded, peers) = {
             let mut total = 0;
             let mut downloaded = 0;
 
@@ -51,7 +58,7 @@ impl App {
                 downloaded += piece.get_downloaded();
             }
 
-            (total, downloaded)
+            (total, downloaded, Vec::new())
         };
 
         App {
@@ -61,8 +68,12 @@ impl App {
             peers_state: TableState::default(),
             piece_state: TableState::default(),
 
-            total_size,
-            total_downloaded,
+            transfer_info: TransferInfo {
+                size,
+                downloaded,
+
+                peers
+            },
 
             stop_tx,
             
@@ -190,15 +201,7 @@ impl App {
                 (&mut self.files_state, self.torrent_info.data().get_files().len())
             }
             else if self.selected_tab == 1 {
-                let max = {
-                    if let Ok(lock) = self.torrent_info.torrent_peers().try_read() {
-                        lock.len()
-                    }
-                    else {
-                        50
-                    }
-                };
-
+                let max = self.transfer_info.peers.len();
                 (&mut self.peers_state, max)
             }
             else {
@@ -246,10 +249,10 @@ impl App {
                     downloaded += piece.get_downloaded();
                 }
 
-                self.total_downloaded = downloaded;
+                self.transfer_info.downloaded = downloaded;
             }
 
-            ((self.total_downloaded as f32 / self.total_size as f32) * 100.0) as u16
+            ((self.transfer_info.downloaded as f32 / self.transfer_info.size as f32) * 100.0) as u16
         };
 
         let rate = {
@@ -276,19 +279,12 @@ impl App {
             .gauge_style(Style::default().fg(Color::Magenta).bg(Color::White))
         ;
         
-        let peers = {
-            if let Ok(peers) = self.torrent_info.torrent_peers().try_read() {
-                peers.len()
-            }
-            else {
-                0
-            }
-        };
+        let peers = self.transfer_info.peers.len();
 
         let row = Row::new(vec![
             Cell::from(Span::styled(name, Style::default())),
-            Cell::from(Span::styled(App::bytes_data(self.total_size as u64), Style::default())),
-            Cell::from(Span::styled(App::bytes_data(self.total_downloaded as u64), Style::default())),
+            Cell::from(Span::styled(App::bytes_data(self.transfer_info.size as u64), Style::default())),
+            Cell::from(Span::styled(App::bytes_data(self.transfer_info.downloaded as u64), Style::default())),
             Cell::from(Span::styled(App::bytes_rate(rate as u64), Style::default())),
             Cell::from(Span::styled(peers.to_string(), Style::default()))
         ]);
@@ -356,76 +352,78 @@ impl App {
     fn draw_peers_tab(&mut self, f: &mut Frame<CrosstermBackend<Stdout>>, area: Rect) {
         let mut rows = Vec::new();
 
-        let peers = self.torrent_info.torrent_peers();
-        let peers_lock = peers.try_read();
+        {
+            if let Ok(lock) = self.torrent_info.torrent_peers().try_read() {
+                self.transfer_info.peers = lock.iter()
+                    .filter_map(| peer | peer.try_read().ok())
+                    .map(| peer | peer.clone())
+                    .collect()
+            }
+        }
 
-        if let Ok(peers) = peers_lock {
-            for peer in peers.iter() {
-                if let Ok(lock) = peer.try_read() {
-                    let now = Instant::now();
-                    let start_time = lock.start_time();
-                    let elapsed = now.checked_sub(start_time.elapsed()).unwrap().elapsed();
-                    let rate = {
-                        if elapsed.as_secs() > 0 {
-                            lock.downloaded_total() / elapsed.as_secs() as usize
+        for peer in self.transfer_info.peers.iter() {
+            let now = Instant::now();
+                let start_time = peer.start_time();
+                let elapsed = now.checked_sub(start_time.elapsed()).unwrap().elapsed();
+                let rate = {
+                    if elapsed.as_secs() > 0 {
+                        peer.downloaded_total() / elapsed.as_secs() as usize
+                    }
+                    else {
+                        0
+                    }
+                };
+
+                rows.push(Row::new(vec![
+                    peer.address().to_string(),
+                    format!("{}", peer.status()),
+                    App::bytes_data(peer.downloaded_total() as u64),
+                    App::bytes_data(peer.uploaded_total() as u64),
+                    App::bytes_rate(rate as u64),
+                    {
+                        if let Some(message) = peer.last_message_sent() {
+                            format!("{}", message)
                         }
                         else {
-                            0
+                            String::from("-")
                         }
-                    };
-
-                    rows.push(Row::new(vec![
-                        lock.address().to_string(),
-                        format!("{}", lock.status()),
-                        App::bytes_data(lock.downloaded_total() as u64),
-                        App::bytes_data(lock.uploaded_total() as u64),
-                        App::bytes_rate(rate as u64),
-                        {
-                            if let Some(message) = lock.last_message_sent() {
-                                format!("{}", message)
-                            }
-                            else {
-                                String::from("-")
-                            }
-                        },
-                        {
-                            if let Some(message) = lock.last_message_received() {
-                                format!("{}", message)
-                            }
-                            else {
-                                String::from("-")
-                            }
+                    },
+                    {
+                        if let Some(message) = peer.last_message_received() {
+                            format!("{}", message)
                         }
-                    ]));
-                }
-            }
-    
-            let table = Table::new(rows)
-                .block(Block::default().borders(Borders::ALL))
-                .header(Row::new(vec![
-                    "Address",
-                    "Status",
-                    "Downloaded",
-                    "Uploaded",
-                    "DL Rate",
-                    "Last Message Sent",
-                    "Last Message Received"
-                ]).bottom_margin(1))
-                .widths(&[
-                    Constraint::Percentage(20),
-                    Constraint::Percentage(10),
-                    Constraint::Percentage(10),
-                    Constraint::Percentage(10),
-                    Constraint::Percentage(10),
-                    Constraint::Percentage(20),
-                    Constraint::Percentage(20)
-                ])
-                .highlight_symbol("> ")
-                .highlight_style(Style::default().fg(Color::Yellow))
-            ;
-            
-            f.render_stateful_widget(table, area, &mut self.peers_state);
+                        else {
+                            String::from("-")
+                        }
+                    }
+                ]));
         }
+
+        let table = Table::new(rows)
+            .block(Block::default().borders(Borders::ALL))
+            .header(Row::new(vec![
+                "Address",
+                "Status",
+                "Downloaded",
+                "Uploaded",
+                "DL Rate",
+                "Last Message Sent",
+                "Last Message Received"
+            ]).bottom_margin(1))
+            .widths(&[
+                Constraint::Percentage(20),
+                Constraint::Percentage(10),
+                Constraint::Percentage(10),
+                Constraint::Percentage(10),
+                Constraint::Percentage(10),
+                Constraint::Percentage(20),
+                Constraint::Percentage(20)
+            ])
+            .highlight_symbol("> ")
+            .highlight_style(Style::default().fg(Color::Yellow))
+        ;
+        
+        f.render_stateful_widget(table, area, &mut self.peers_state);
     }
 
     fn draw_pieces_tab(&mut self, f: &mut Frame<CrosstermBackend<Stdout>>, area: Rect) {
