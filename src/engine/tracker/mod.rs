@@ -77,7 +77,7 @@ impl TrackersHandler {
 
             for tracker in self.trackers.iter_mut() {
                 let (should_announce, reannounce) = {
-                    // reannounce_rate should be set a successful announce.
+                    // reannounce_rate should be set after a successful announce.
                     if let Some(reannounce_rate) = tracker.reannounce_rate.as_ref() {
                         if let Some(last_announce) = tracker.last_announce_time.as_ref() {
                             (&last_announce.elapsed() > reannounce_rate, true)
@@ -115,6 +115,10 @@ impl TrackersHandler {
 
             self.new_peers_tx.send(received_peers).await
                 .expect("failed to send peers info to engine");
+
+            if let Ok(progress) = self.transfer_progress_rx.try_recv() {
+                self.progress = progress;
+            }
 
             tokio::time::sleep(Duration::from_millis(500)).await;
         }
