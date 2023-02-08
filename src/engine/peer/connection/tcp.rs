@@ -44,7 +44,7 @@ impl PeerConnection for TcpConnection {
             let read_msg_bytes = self.stream.read_exact(&mut msg_buf).await.ok()?;
 
             if read_msg_bytes == msg_length {
-                message = Message::from_bytes(msg_buf);
+                message = Some(msg_buf.into());
             }
         }
 
@@ -52,7 +52,7 @@ impl PeerConnection for TcpConnection {
     }
 
     async fn send_message(&mut self, message: Message) -> bool {
-        let buf = message.to_bytes();
+        let buf: Vec<u8> = message.into();
         self.stream.write_all(&buf).await.is_ok()
     }
 
