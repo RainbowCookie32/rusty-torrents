@@ -227,7 +227,7 @@ impl Engine {
                 let info_peer = info.clone();
                 let info_torrent = self.torrent_info.clone();
     
-                tokio::task::spawn(async move {
+                tokio::spawn(async move {
                     let info_peer = info_peer;
                     let info_torrent = info_torrent;
 
@@ -273,7 +273,7 @@ impl Engine {
                                 break;
                             }
     
-                            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+                            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
                         }
                     }
                     else {
@@ -316,16 +316,18 @@ impl Engine {
         if let Ok(mut lock) = self.torrent_info.torrent_peers.try_write() {
             let infos = lock.to_owned();
 
-            let clear: Vec<Arc<RwLock<PeerInfo>>> = infos.into_iter().filter(|i| {
-                if let Ok(i) = i.try_read() {
-                    i.status() != ConnectionStatus::Dropped
-                }
-                else {
-                    true
-                }
-            }).collect();
-
-            *lock = clear;
+            *lock = infos
+                .into_iter()
+                .filter(| i | {
+                    if let Ok(i) = i.try_read() {
+                        i.status() != ConnectionStatus::Dropped
+                    }
+                    else {
+                        true
+                    }
+                })
+                .collect()
+            ;
         }
     }
 
