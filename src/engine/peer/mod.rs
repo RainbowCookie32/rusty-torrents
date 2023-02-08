@@ -295,6 +295,7 @@ impl Display for ConnectionStatus {
     }
 }
 
+#[derive(Clone)]
 pub struct PeerInfo {
     status: ConnectionStatus,
 
