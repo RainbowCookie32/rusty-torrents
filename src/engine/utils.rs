@@ -9,12 +9,12 @@ use crate::engine::piece::Piece;
 
 pub async fn read_piece(info: Arc<TorrentInfo>, start_file: usize, start_position: usize) -> Vec<u8> {
     let piece_length = info.piece_length as usize;
-    let last_file = start_file == info.torrent_files.read().await.len() - 1;
-    let mut piece = info.torrent_files.write().await[start_file].read_piece(start_position as u64).await;
+    let last_file = start_file == info.files.read().await.len() - 1;
+    let mut piece = info.files.write().await[start_file].read_piece(start_position as u64).await;
                     
     if !last_file && piece.len() < piece_length {
         let remaining_data = piece_length - piece.len();
-        let mut data = info.torrent_files.write().await[start_file + 1].read_piece(0).await;
+        let mut data = info.files.write().await[start_file + 1].read_piece(0).await;
     
         data.resize(remaining_data, 0);
         piece.append(&mut data);
@@ -24,8 +24,8 @@ pub async fn read_piece(info: Arc<TorrentInfo>, start_file: usize, start_positio
 }
 
 pub async fn write_piece(info: Arc<TorrentInfo>, data: &[u8], file_idx: &mut usize, file_position: &mut usize) {
-    let file_count = info.torrent_files.read().await.len();
-    let mut files_lock = info.torrent_files.write().await;
+    let file_count = info.files.read().await.len();
+    let mut files_lock = info.files.write().await;
     let mut file = files_lock[*file_idx].file_mut();
 
     if file_count == 1 {
@@ -60,7 +60,7 @@ pub async fn check_torrent(info: Arc<TorrentInfo>) {
         let start_file = current_file;
         let start_offset = current_file_offset as usize;
         let piece_hash = hashes[current_piece].as_slice();
-        let file_size = info.torrent_files.read().await[current_file].get_file_size().await as usize;
+        let file_size = info.files.read().await[current_file].get_file_size().await as usize;
         
         let piece_data = read_piece(info.clone(), current_file, current_file_offset).await;
         let end_offset = current_file_offset as usize + piece_data.len();
@@ -87,6 +87,6 @@ pub async fn check_torrent(info: Arc<TorrentInfo>) {
         }
         
         current_piece += 1;
-        info.torrent_pieces.write().await.push(piece);
+        info.pieces.write().await.push(piece);
     }
 }

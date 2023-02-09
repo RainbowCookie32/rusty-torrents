@@ -45,7 +45,7 @@ impl Peer {
         let address = info_peer.read().await.address();
 
         if let Some(mut connection) = connection::create_connection(&address).await {
-            let peer_bitfield = Bitfield::empty(info_torrent.get_pieces_count().await);
+            let peer_bitfield = Bitfield::empty(info_torrent.pieces_count());
 
             if !connection.handshake_peer(info_torrent.get_handshake()).await {
                 return None;
@@ -99,7 +99,7 @@ impl Peer {
         !self.awaiting_response && !self.is_choked
     }
 
-    pub fn get_requested_piece(&self) -> Option<usize> {
+    pub fn requested_piece(&self) -> Option<usize> {
         self.requested_piece
     }
 
@@ -130,7 +130,7 @@ impl Peer {
             }
 
             let (block_offset, block_length) = {
-                if let Some(piece) = self.info_torrent.torrent_pieces.read().await.get(piece) {
+                if let Some(piece) = self.info_torrent.pieces.read().await.get(piece) {
                     piece.get_block_request()
                 }
                 else {
@@ -180,7 +180,7 @@ impl Peer {
 
                 Message::Have { piece } => {
                     // Piece doesn't exist on the torrent, drop the peer.
-                    if piece > self.info_torrent.torrent_pieces.read().await.len() as u32 {
+                    if piece > self.info_torrent.pieces.read().await.len() as u32 {
                         return false;
                     }
                     
@@ -192,7 +192,7 @@ impl Peer {
                 Message::Request { piece_idx, block_offset, block_length } => {
                     if self.info_torrent.bitfield_client.read().await.is_piece_available(piece_idx as usize) {
                         if !self.is_choked && self.peer_interested {
-                            if let Some(piece) = self.info_torrent.torrent_pieces.read().await.get(piece_idx as usize) {
+                            if let Some(piece) = self.info_torrent.pieces.read().await.get(piece_idx as usize) {
                                 let (start_file, start_position) = piece.get_offsets();
                                 let piece = utils::read_piece(self.info_torrent.clone(), start_file, start_position).await;
                                 let block_data = {
@@ -239,7 +239,7 @@ impl Peer {
                     let mut piece_data = None;
 
                     {
-                        let mut lock = self.info_torrent.torrent_pieces.write().await;
+                        let mut lock = self.info_torrent.pieces.write().await;
 
                         if let Some(piece) = lock.get_mut(piece_idx as usize) {
                             self.requested_received += block_data.len();
@@ -250,13 +250,13 @@ impl Peer {
                                 if piece.check_piece() {
                                     file_idx = piece.get_offsets().0;
                                     file_position = piece.get_offsets().1;
-                                    piece_data = Some(piece.piece_data().to_owned());
+                                    piece_data = Some(piece.data().to_owned());
                                     
                                     piece.set_finished(true);
                                     piece.set_requested(false);
                                 }
                                 else {
-                                    piece.reset_piece();
+                                    piece.discard();
                                 }
     
                                 self.requested_size = 0;
@@ -271,16 +271,16 @@ impl Peer {
                     self.awaiting_response = false;
 
                     if let Some(piece_data) = piece_data {
-                        let total: usize = self.info_torrent.torrent_pieces().read().await
+                        let total: usize = self.info_torrent.pieces().read().await
                             .iter()
-                            .map(| piece | piece.get_len())
+                            .map(| piece | piece.length())
                             .sum()
                         ;
 
-                        let downloaded: usize = self.info_torrent.torrent_pieces().read().await
+                        let downloaded: usize = self.info_torrent.pieces().read().await
                             .iter()
                             .filter(| piece | piece.finished())
-                            .map(| piece | piece.get_len())
+                            .map(| piece | piece.length())
                             .sum()
                         ;
 

@@ -14,7 +14,7 @@ impl File {
         let mut path = output_path.to_path_buf();
         path.push(filename);
 
-        tokio::fs::create_dir_all(path.parent().unwrap()).await.expect("Failed to create directory for file.");
+        fs::create_dir_all(path.parent().unwrap()).await.expect("Failed to create directory for file.");
 
         let mut file = OpenOptions::new()
             .read(true)

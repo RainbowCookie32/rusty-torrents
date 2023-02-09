@@ -31,9 +31,9 @@ pub struct TorrentInfo {
     pub total_uploaded: Arc<RwLock<usize>>,
     pub total_downloaded: Arc<RwLock<usize>>,
 
-    torrent_files: Arc<RwLock<Vec<File>>>,
-    torrent_pieces: Arc<RwLock<Vec<Piece>>>,
-    torrent_peers: Arc<RwLock<Vec<Arc<RwLock<PeerInfo>>>>>,
+    files: Arc<RwLock<Vec<File>>>,
+    pieces: Arc<RwLock<Vec<Piece>>>,
+    peers: Arc<RwLock<Vec<Arc<RwLock<PeerInfo>>>>>,
 
     bitfield_client: Arc<RwLock<Bitfield>>
 }
@@ -62,7 +62,7 @@ impl TorrentInfo {
     }
 
     pub fn is_complete(&self) -> bool {
-        if let Ok(pieces) = self.torrent_pieces.try_read() {
+        if let Ok(pieces) = self.pieces.try_read() {
             pieces.iter().filter(|p| !p.finished()).count() == 0
         }
         else {
@@ -71,28 +71,23 @@ impl TorrentInfo {
     }
 
     pub async fn release_piece(&self, idx: usize) {
-        if let Some(piece) = self.torrent_pieces.write().await.get_mut(idx) {
+        if let Some(piece) = self.pieces.write().await.get_mut(idx) {
             piece.set_requested(false);
         }
     }
 
     pub async fn piece_requested(&self, idx: usize) {
-        if let Some(piece) = self.torrent_pieces.write().await.get_mut(idx) {
+        if let Some(piece) = self.pieces.write().await.get_mut(idx) {
             piece.set_requested(true);
         }
     }
 
     // Always check that there are unfinished pieces before calling this!
     pub async fn get_unfinished_piece_idx(&self) -> usize {
-        if let Some(pieces) = self.get_missing_pieces_count() {
-            assert!(pieces > 0)
-        }
-        else {
-            return 0;
-        }
+        assert!(self.missing_pieces_count() > 0);
 
         let mut idx: usize;
-        let pieces = self.torrent_pieces.read().await;
+        let pieces = self.pieces.read().await;
 
         let mut rng = rand::thread_rng();
         
@@ -107,17 +102,15 @@ impl TorrentInfo {
         idx
     }
 
-    pub async fn get_pieces_count(&self) -> usize {
-        self.torrent_pieces.read().await.len()
+    pub fn pieces_count(&self) -> usize {
+        self.pieces.blocking_read().len()
     }
 
-    pub fn get_missing_pieces_count(&self) -> Option<usize> {
-        if let Ok(pieces) = self.torrent_pieces.try_read() {
-            Some(pieces.iter().filter(|p| !p.requested() && !p.finished()).count())
-        }
-        else {
-            None
-        }
+    pub fn missing_pieces_count(&self) -> usize {
+        self.pieces.blocking_read()
+            .iter()
+            .filter(| piece | !piece.requested() && !piece.finished())
+            .count()
     }
 
     /// Get a reference to the torrent info's data.
@@ -125,12 +118,12 @@ impl TorrentInfo {
         &self.data
     }
 
-    pub fn torrent_pieces(&self) -> Arc<RwLock<Vec<Piece>>> {
-        self.torrent_pieces.clone()
+    pub fn pieces(&self) -> Arc<RwLock<Vec<Piece>>> {
+        self.pieces.clone()
     }
 
-    pub fn torrent_peers(&self) -> Arc<RwLock<Vec<Arc<RwLock<PeerInfo>>>>> {
-        self.torrent_peers.clone()
+    pub fn peers(&self) -> Arc<RwLock<Vec<Arc<RwLock<PeerInfo>>>>> {
+        self.peers.clone()
     }
 }
 
@@ -171,9 +164,9 @@ impl Engine {
             total_uploaded: Arc::new(RwLock::new(0)),
             total_downloaded: Arc::new(RwLock::new(0)),
 
-            torrent_files,
-            torrent_pieces: Arc::new(RwLock::new(Vec::new())),
-            torrent_peers: Arc::new(RwLock::new(Vec::new())),
+            files: torrent_files,
+            pieces: Arc::new(RwLock::new(Vec::new())),
+            peers: Arc::new(RwLock::new(Vec::new())),
 
             bitfield_client: Arc::new(RwLock::new(Bitfield::empty(pieces)))
         };
@@ -185,16 +178,16 @@ impl Engine {
 
         utils::check_torrent(torrent_info.clone()).await;
 
-        let total: usize = torrent_info.torrent_pieces().read().await
+        let total: usize = torrent_info.pieces().read().await
             .iter()
-            .map(| piece | piece.get_len())
+            .map(| piece | piece.length())
             .sum()
         ;
 
-        let downloaded: usize = torrent_info.torrent_pieces().read().await
+        let downloaded: usize = torrent_info.pieces().read().await
             .iter()
             .filter(| piece | piece.finished())
-            .map(| piece | piece.get_len())
+            .map(| piece | piece.length())
             .sum()
         ;
         
@@ -244,7 +237,7 @@ impl Engine {
                 self.add_peers(list).await;
             }
 
-            for info in self.torrent_info.torrent_peers.read().await.iter() {
+            for info in self.torrent_info.peers.read().await.iter() {
                 if info.read().await.status() != ConnectionStatus::Disconnected {
                     continue;
                 }
@@ -271,24 +264,22 @@ impl Engine {
                             }
         
                             if peer.should_request_piece() {
-                                let piece = peer.get_requested_piece();
+                                let piece = peer.requested_piece();
     
                                 if let Some(piece) = piece {
                                     if peer.request_piece(piece).await {
                                         info_torrent.piece_requested(piece).await;
                                     }
                                 }
-                                else if let Some(missing_pieces) = info_torrent.get_missing_pieces_count() {
-                                    if missing_pieces > 0 {
-                                        let piece = info_torrent.get_unfinished_piece_idx().await;
-    
-                                        if peer.request_piece(piece).await {
-                                            info_torrent.piece_requested(piece).await;
-                                        }
+                                else if info_torrent.missing_pieces_count() > 0 {
+                                    let piece = info_torrent.get_unfinished_piece_idx().await;
+                                
+                                    if peer.request_piece(piece).await {
+                                        info_torrent.piece_requested(piece).await;
                                     }
-                                    else {
-                                        // peer.send_keep_alive().await;
-                                    }
+                                }
+                                else {
+                                    // peer.send_keep_alive().await;
                                 }
                             }
     
@@ -322,7 +313,7 @@ impl Engine {
         for address in peers {
             let mut skip = false;
 
-            for peer in self.torrent_info.torrent_peers().read().await.iter() {
+            for peer in self.torrent_info.peers().read().await.iter() {
                 if peer.read().await.address() == address {
                     skip = true;
                     break;
@@ -334,12 +325,12 @@ impl Engine {
             }
 
             let info_peer = Arc::new(RwLock::new(PeerInfo::new(address)));
-            self.torrent_info.torrent_peers.write().await.push(info_peer);
+            self.torrent_info.peers.write().await.push(info_peer);
         }
     }
 
     async fn clear_peers_list(&mut self) {
-        if let Ok(mut lock) = self.torrent_info.torrent_peers.try_write() {
+        if let Ok(mut lock) = self.torrent_info.peers.try_write() {
             let infos = lock.to_owned();
 
             *lock = infos

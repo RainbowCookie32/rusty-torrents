@@ -27,7 +27,7 @@ impl Piece {
         }
     }
 
-    pub fn get_len(&self) -> usize {
+    pub fn length(&self) -> usize {
         self.piece_len
     }
 
@@ -59,7 +59,7 @@ impl Piece {
         sha1::Sha1::from(&self.piece_data).digest().bytes() == self.piece_hash.as_slice()
     }
 
-    pub fn reset_piece(&mut self) {
+    pub fn discard(&mut self) {
         self.finished = false;
         self.requested = false;
         self.piece_data = Vec::new();
@@ -92,7 +92,7 @@ impl Piece {
         self.piece_data.len() >= self.piece_len
     }
 
-    pub fn piece_data(&self) -> &[u8] {
+    pub fn data(&self) -> &[u8] {
         self.piece_data.as_slice()
     }
 }

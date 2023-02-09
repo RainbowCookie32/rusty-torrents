@@ -17,7 +17,7 @@ use tui::layout::{Constraint, Layout, Rect};
 use tui::widgets::{Block, Borders, Cell, Gauge, Row, Table, TableState, Tabs};
 
 use crossterm::execute;
-use crossterm::event::{DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEvent, KeyEventKind, MouseEventKind};
+use crossterm::event::{DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEventKind, MouseEventKind};
 use crossterm::terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen};
 
 use crate::engine::TorrentInfo;
@@ -44,9 +44,9 @@ pub struct App {
 
 impl App {
     pub async fn new(stop_tx: oneshot::Sender<()>, torrent_info: Arc<TorrentInfo>, rx: broadcast::Receiver<TransferProgress>) -> App {
-        let transfer_size = torrent_info.torrent_pieces().read().await
+        let transfer_size = torrent_info.pieces().read().await
             .iter()
-            .map(| piece | piece.get_len())
+            .map(| piece | piece.length())
             .sum()
         ;
 
@@ -340,7 +340,7 @@ impl App {
         let mut rows = Vec::new();
 
         {
-            if let Ok(lock) = self.torrent_info.torrent_peers().try_read() {
+            if let Ok(lock) = self.torrent_info.peers().try_read() {
                 self.transfer_peers = lock.iter()
                     .filter_map(| peer | peer.try_read().ok())
                     .map(| peer | peer.clone())
@@ -416,14 +416,14 @@ impl App {
     fn draw_pieces_tab(&mut self, f: &mut Frame<CrosstermBackend<Stdout>>, area: Rect) {
         let mut rows = Vec::new();
 
-        let pieces = self.torrent_info.torrent_pieces();
+        let pieces = self.torrent_info.pieces();
         let pieces_lock = pieces.try_read();
 
         if let Ok(pieces) = pieces_lock {
             for (i, piece) in pieces.iter().enumerate() {
                 rows.push(Row::new(vec![
                     i.to_string(),
-                    App::bytes_data(piece.get_len() as u64),
+                    App::bytes_data(piece.length() as u64),
                     App::bytes_data(piece.get_downloaded() as u64),
                     if piece.requested() {String::from("Yes")} else {String::from("No")},
                     if piece.finished() {String::from("Yes")} else {String::from("No")}
