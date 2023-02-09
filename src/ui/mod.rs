@@ -17,7 +17,7 @@ use tui::layout::{Constraint, Layout, Rect};
 use tui::widgets::{Block, Borders, Cell, Gauge, Row, Table, TableState, Tabs};
 
 use crossterm::execute;
-use crossterm::event::{DisableMouseCapture, EnableMouseCapture, Event, KeyCode, MouseEventKind};
+use crossterm::event::{DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEvent, KeyEventKind, MouseEventKind};
 use crossterm::terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen};
 
 use crate::engine::TorrentInfo;
@@ -84,11 +84,12 @@ impl App {
         terminal.clear().unwrap();
 
         let tick_rate = std::time::Duration::from_millis(200);
-        let mut last_tick = std::time::Instant::now();
+        let mut last_tick = Instant::now();
     
         loop {
             let mut should_draw = false;
-            let timeout = tick_rate.checked_sub(last_tick.elapsed()).unwrap_or_else(|| std::time::Duration::from_secs(0));
+            let timeout = tick_rate.checked_sub(last_tick.elapsed())
+                .unwrap_or_else(|| std::time::Duration::from_secs(0));
 
             if let Ok(progress) = self.progress_rx.try_recv() {
                 self.transfer_progress = progress;
@@ -99,6 +100,10 @@ impl App {
                     if let Ok(event) = crossterm::event::read() {
                         match event {
                             Event::Key(key) => {
+                                if key.kind != KeyEventKind::Release {
+                                    continue;
+                                }
+
                                 match key.code {
                                     KeyCode::Up => {
                                         self.scroll_list(true);
@@ -166,7 +171,7 @@ impl App {
     
             if last_tick.elapsed() >= tick_rate {
                 should_draw = true;
-                last_tick = std::time::Instant::now();
+                last_tick = Instant::now();
             }
 
             if should_draw {

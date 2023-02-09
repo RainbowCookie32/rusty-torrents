@@ -357,7 +357,7 @@ impl Engine {
         }
     }
 
-    async fn build_file_list(output_path: &Path, files_data: &[(std::string::String, u64)], piece_length: u64) -> Vec<File> {
+    async fn build_file_list(output_path: &Path, files_data: &[(String, u64)], piece_length: u64) -> Vec<File> {
         let mut list = Vec::new();
 
         for (filename, size) in files_data {
