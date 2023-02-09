@@ -1,3 +1,5 @@
+use std::path::Path;
+
 use tokio::fs;
 use tokio::fs::OpenOptions;
 use tokio::io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt, SeekFrom};
@@ -8,8 +10,8 @@ pub struct File {
 }
 
 impl File {
-    pub async fn new(filename: String, size: u64, piece_length: u64) -> File {
-        let mut path = dirs::download_dir().unwrap();
+    pub async fn new(output_path: &Path, filename: &String, size: u64, piece_length: u64) -> File {
+        let mut path = output_path.to_path_buf();
         path.push(filename);
 
         tokio::fs::create_dir_all(path.parent().unwrap()).await.expect("Failed to create directory for file.");

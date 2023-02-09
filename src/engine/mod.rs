@@ -6,6 +6,7 @@ mod tracker;
 
 use std::sync::Arc;
 use std::net::SocketAddrV4;
+use std::path::{Path, PathBuf};
 
 use rand::Rng;
 
@@ -142,8 +143,10 @@ pub struct Engine {
 }
 
 impl Engine {
-    pub async fn init(data: Vec<u8>, stop_rx: oneshot::Receiver<()>) -> Engine {
-        let data = ParsedTorrent::new(data);
+    pub async fn init(torrent_path: PathBuf, output_path: PathBuf, stop_rx: oneshot::Receiver<()>) -> Engine {
+        let torrent_data = tokio::fs::read(torrent_path).await.expect("failed to read torrent file");
+
+        let data = ParsedTorrent::new(torrent_data);
         let piece_length = data.info().piece_length();
         
         let mut trackers_list: Vec<String> = {
@@ -156,7 +159,7 @@ impl Engine {
 
         trackers_list.insert(0, data.announce().to_owned());
         
-        let torrent_files = Engine::build_file_list(data.info().files(), piece_length).await;
+        let torrent_files = Engine::build_file_list(&output_path, data.info().files(), piece_length).await;
         let torrent_files = Arc::new(RwLock::new(torrent_files));
 
         let pieces = data.info().pieces().len();
@@ -354,11 +357,11 @@ impl Engine {
         }
     }
 
-    async fn build_file_list(files_data: &[(std::string::String, u64)], piece_length: u64) -> Vec<File> {
+    async fn build_file_list(output_path: &Path, files_data: &[(std::string::String, u64)], piece_length: u64) -> Vec<File> {
         let mut list = Vec::new();
 
         for (filename, size) in files_data {
-            list.push(File::new(filename.to_string(), *size, piece_length).await);
+            list.push(File::new(output_path, filename, *size, piece_length).await);
         }
 
         list
