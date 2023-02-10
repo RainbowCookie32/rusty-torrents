@@ -306,7 +306,7 @@ impl Engine {
             }
             
             self.clear_peers_list().await;
-            std::thread::sleep(std::time::Duration::from_millis(5));
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
         }
     }
 
