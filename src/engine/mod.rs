@@ -84,7 +84,7 @@ impl TorrentInfo {
 
     // Always check that there are unfinished pieces before calling this!
     pub async fn get_unfinished_piece_idx(&self) -> usize {
-        assert!(self.missing_pieces_count() > 0);
+        assert!(self.missing_pieces_count().await > 0);
 
         let mut idx: usize;
         let pieces = self.pieces.read().await;
@@ -102,12 +102,13 @@ impl TorrentInfo {
         idx
     }
 
-    pub fn pieces_count(&self) -> usize {
-        self.pieces.blocking_read().len()
+    pub async fn pieces_count(&self) -> usize {
+        self.pieces.read().await.len()
     }
 
-    pub fn missing_pieces_count(&self) -> usize {
-        self.pieces.blocking_read()
+    pub async fn missing_pieces_count(&self) -> usize {
+        self.pieces.read()
+            .await
             .iter()
             .filter(| piece | !piece.requested() && !piece.finished())
             .count()
@@ -271,7 +272,7 @@ impl Engine {
                                         info_torrent.piece_requested(piece).await;
                                     }
                                 }
-                                else if info_torrent.missing_pieces_count() > 0 {
+                                else if info_torrent.missing_pieces_count().await > 0 {
                                     let piece = info_torrent.get_unfinished_piece_idx().await;
                                 
                                     if peer.request_piece(piece).await {

@@ -1,8 +1,8 @@
 mod connection;
 pub mod message;
 
-use std::fmt::Display;
 use std::sync::Arc;
+use std::fmt::Display;
 use std::net::SocketAddrV4;
 use std::time::{Duration, Instant};
 
@@ -45,7 +45,7 @@ impl Peer {
         let address = info_peer.read().await.address();
 
         if let Some(mut connection) = connection::create_connection(&address).await {
-            let peer_bitfield = Bitfield::empty(info_torrent.pieces_count());
+            let peer_bitfield = Bitfield::empty(info_torrent.pieces_count().await);
 
             if !connection.handshake_peer(info_torrent.get_handshake()).await {
                 return None;
