@@ -188,8 +188,8 @@ impl TcpPeer {
             }
 
             if let Some(time_waiting) = self.waiting_since.as_ref() {
-                if time_waiting.elapsed() > Duration::from_secs(120) {
-                    // Two whole minutes waiting for a Piece. yeet.
+                if time_waiting.elapsed() > Duration::from_secs(30) {
+                    // 30 whole seconds waiting for a Piece. yeet.
                     break;
                 }
             }
@@ -311,7 +311,7 @@ impl TcpPeer {
     async fn send_message(&mut self, message: Message) -> bool {
         let msg_buf: Vec<u8> = message.into();
 
-        if let Ok(result) = time::timeout(Duration::from_secs(120), self.stream.write_all(&msg_buf)).await {
+        if let Ok(result) = time::timeout(Duration::from_secs(30), self.stream.write_all(&msg_buf)).await {
             result.is_ok()
         }
         else {
