@@ -1,3 +1,4 @@
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 use std::net::{SocketAddrV4, Ipv4Addr};
 
@@ -9,6 +10,7 @@ use tokio::sync::broadcast;
 use tokio::net::UdpSocket;
 
 use crate::bencode::BEncodeType;
+use crate::engine::transfer::TransferProgress;
 
 type PeersTx = mpsc::Sender<Vec<SocketAddrV4>>;
 type ProgressRx = broadcast::Receiver<TransferProgress>;
@@ -18,30 +20,8 @@ enum TrackerKind {
     Udp { connection_id: String }
 }
 
-// TODO: This struct would be better suited to a transfer.rs file or something.
-#[derive(Debug, Clone)]
-pub struct TransferProgress {
-    left: u64,
-    uploaded: u64,
-    downloaded: u64
-}
-
-impl TransferProgress {
-    pub fn new(left: u64, uploaded: u64, downloaded: u64) -> TransferProgress {
-        TransferProgress {
-            left,
-            uploaded,
-            downloaded
-        }
-    }
-
-    pub fn left(&self) -> u64 {
-        self.left
-    }
-}
-
 pub struct TrackersHandler {
-    info_hash: [u8; 20],
+    info_hash: Arc<[u8; 20]>,
     progress: TransferProgress,
 
     trackers: Vec<Tracker>,
@@ -51,7 +31,7 @@ pub struct TrackersHandler {
 }
 
 impl TrackersHandler {
-    pub fn init(info_hash: [u8; 20], progress: TransferProgress, trackers: Vec<String>, peers_tx: PeersTx, progress_rx: ProgressRx) -> TrackersHandler {
+    pub fn init(info_hash: Arc<[u8; 20]>, progress: TransferProgress, trackers: Vec<String>, peers_tx: PeersTx, progress_rx: ProgressRx) -> TrackersHandler {
         let peer_id: String = vec!['0'; 20].iter().collect();
 
         let trackers = trackers.into_iter()
@@ -115,8 +95,10 @@ impl TrackersHandler {
             received_peers.sort_unstable();
             received_peers.dedup();
 
-            self.new_peers_tx.send(received_peers).await
-                .expect("failed to send peers info to engine");
+            if !received_peers.is_empty() {
+                self.new_peers_tx.send(received_peers).await
+                    .expect("failed to send peers info to engine");
+            }
 
             if let Ok(progress) = self.transfer_progress_rx.try_recv() {
                 self.progress = progress;

@@ -1,398 +1,375 @@
-mod connection;
 pub mod message;
 
 use std::sync::Arc;
-use std::fmt::Display;
 use std::net::SocketAddrV4;
 use std::time::{Duration, Instant};
 
-use tokio::sync::RwLock;
-use tokio::sync::broadcast;
+use bytes::Buf;
+use tokio::time;
+use tokio::net::TcpStream;
+use tokio::sync::{broadcast, mpsc, watch};
+use tokio::io::{AsyncWriteExt, AsyncReadExt};
 
 use message::Message;
-use connection::PeerConnection;
 
-use crate::engine::utils;
-use crate::engine::TorrentInfo;
-use crate::engine::tracker::TransferProgress;
+type CmdRx = mpsc::UnboundedReceiver<PeerCommand>;
+type StatusTx = watch::Sender<PeerStatus>;
+type PieceRx = broadcast::Receiver<usize>;
+type PieceDataTx = mpsc::UnboundedSender<(usize, Vec<u8>)>;
 
-pub struct Peer {
-    connection: Box<dyn PeerConnection + Send>,
+const PROTOCOL: [u8; 19] = *b"BitTorrent protocol";
+const PLACEHOLDER_ID: [u8; 20] = *b"00000000000000000000";
 
-    is_choked: bool,
-    is_interested: bool,
-    awaiting_response: bool,
-    
-    peer_choked: bool,
-    peer_interested: bool,
-    peer_bitfield: Bitfield,
-
-    info_peer: Arc<RwLock<PeerInfo>>,
-    info_torrent: Arc<TorrentInfo>,
-
-    requested_size: usize,
-    requested_received: usize,
-    requested_piece: Option<usize>,
-
-    timer_last_message: Instant,
-    timer_received_data: Instant,
-
-    transfer_progress_tx: broadcast::Sender<TransferProgress>
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum PeerStatus {
+    /// Waiting for the peer to reply to a message or unchoke us.
+    Waiting,
+    /// The peer was dropped. This can be caused by the peer sending bad data,
+    /// or being unresponsive/choked for too long.
+    Dropped { assigned_piece: Option<usize> },
+    /// Connection with Peer was established and is ready to work.
+    Available { available_pieces: Vec<bool> },
 }
 
-impl Peer {
-    pub async fn connect(info_peer: Arc<RwLock<PeerInfo>>, info_torrent: Arc<TorrentInfo>, tx: broadcast::Sender<TransferProgress>) -> Option<Peer> {
-        let address = info_peer.read().await.address();
+#[derive(Debug)]
+pub enum PeerCommand {
+    Disconnect,
+    RequestPiece(usize, u64)
+}
 
-        if let Some(mut connection) = connection::create_connection(&address).await {
-            let peer_bitfield = Bitfield::empty(info_torrent.pieces_count().await);
+pub struct TcpPeer {
+    stream: TcpStream,
+    /// SHA-1 hash of the info section of the torrent file.
+    info_hash: Arc<[u8; 20]>,
 
-            if !connection.handshake_peer(info_torrent.get_handshake()).await {
-                return None;
-            }
+    /// The peer is interested on us, might request a Piece.
+    peer_interested: bool,
+    /// We are interested on the Peer, might request a Piece.
+    client_interested: bool,
 
-            let bitfield = info_torrent.bitfield_client.read().await.clone();
+    /// Peer is chocking us, can't send any requests.
+    peer_chocking: bool,
+    /// We are chocking the peer, ignore any requests.
+    client_chocking: bool,
 
-            if !connection.send_message(Message::Bitfield { bitfield }).await {
-                return None;
-            }
+    /// Each entry on this Vec represents whether or not a piece
+    /// is available on this peer. It's calculated from the Bitfield message
+    /// and updated when receiving Have messages.
+    available_pieces: Vec<bool>,
+    /// The pieces *we* have that are complete.
+    completed_pieces: Vec<bool>,
 
-            let peer = Peer {
-                connection,
+    /// Holds the Piece data received from the Peer.
+    piece_data: Vec<u8>,
+    /// The index and length of the requested Piece.
+    piece_info: Option<(usize, u64)>,
 
-                is_choked: true,
-                is_interested: false,
-                awaiting_response: false,
+    /// Gets commands from the Engine, like Piece requests,
+    /// or disconnects.
+    cmd_rx: mpsc::UnboundedReceiver<PeerCommand>,
+    /// Sends info about the Peer's status to the Engine for work coordination.
+    /// This updates are connection and choke state, and available pieces.
+    peer_status_tx: watch::Sender<PeerStatus>,
 
-                peer_choked: true,
+    /// Receives info about completed pieces from the Engine.
+    complete_piece_rx: broadcast::Receiver<usize>,
+    /// Sends the index and data of a complete Piece back to the Engine
+    /// for checking and writing.
+    complete_piece_data_tx: mpsc::UnboundedSender<(usize, Vec<u8>)>,
+
+    /// The amount of time the peer had us chocked for.
+    chocked_since: Option<Instant>,
+    /// The amount of time we've been waiting for the peer to reply.
+    waiting_since: Option<Instant>,
+}
+
+impl TcpPeer {
+    // Gets the address of the Peer and attemps to create a TcpStream to it.
+    // Connection attempts should only happen after checking the torrent!
+    pub async fn connect(
+        address: SocketAddrV4,
+        info_hash: Arc<[u8; 20]>,
+        completed_pieces: Vec<bool>,
+        cmd_rx: CmdRx,
+        peer_status_tx: StatusTx,
+        complete_piece_rx: PieceRx,
+        complete_piece_data_tx: PieceDataTx
+    ) -> Option<TcpPeer> {
+        let stream = TcpStream::connect(address).await.ok()?;
+
+        Some(
+            TcpPeer {
+                stream,
+                info_hash,
+    
                 peer_interested: false,
-                peer_bitfield,
+                client_interested: false,
+    
+                peer_chocking: true,
+                client_chocking: true,
+    
+                available_pieces: Vec::new(),
+                completed_pieces,
 
-                info_peer,
-                info_torrent,
+                piece_data: Vec::new(),
+                piece_info: None,
+    
+                cmd_rx,
+                peer_status_tx,
+    
+                complete_piece_rx,
+                complete_piece_data_tx,
+    
+                chocked_since: None,
+                waiting_since: None
+            }
+        )
+    }
 
-                requested_size: 0,
-                requested_received: 0,
-                requested_piece: None,
-
-                timer_last_message: Instant::now(),
-                timer_received_data: Instant::now(),
-
-                transfer_progress_tx: tx
-            };
-
-            Some(peer)
+    fn get_assigned_piece(&self) -> Option<usize> {
+        if let Some((piece, _)) = self.piece_info.as_ref() {
+            Some(*piece)
         }
         else {
             None
         }
     }
 
-    pub fn should_drop(&self) -> bool {
-        let dead = self.timer_last_message.elapsed() >= Duration::from_secs(10);
-        let slow = self.requested_received < (self.requested_size / 2) && self.timer_received_data.elapsed() > Duration::from_secs(30);
-
-        dead || slow
-    }
-
-    pub fn should_request_piece(&self) -> bool {
-        !self.awaiting_response && !self.is_choked
-    }
-
-    pub fn requested_piece(&self) -> Option<usize> {
-        self.requested_piece
-    }
-
-    pub async fn release_requested_piece(&mut self) {
-        if let Some(piece) = self.requested_piece {
-            self.info_torrent.release_piece(piece).await;
-            
-            self.requested_size = 0;
-            self.requested_received = 0;
-            self.requested_piece = None;
+    /// Starts communication with the peer. Sends the handshake
+    /// and receives/sends messages about the active torrent.
+    pub async fn connect_to_peer(mut self) {
+        if !self.send_handshake().await {
+            self.update_peer_status(PeerStatus::Dropped { assigned_piece: self.get_assigned_piece() });
+            return;
         }
-    }
 
-    pub async fn request_piece(&mut self, piece: usize) -> bool {
-        if self.peer_bitfield.is_piece_available(piece) {
-            if self.awaiting_response {
-                return true;
+        if !self.send_message(Message::Bitfield { bitfield: Bitfield::from_pieces(self.completed_pieces.clone()) }).await {
+            self.update_peer_status(PeerStatus::Dropped { assigned_piece: self.get_assigned_piece() });
+            return;
+        }
+
+        self.update_peer_status(PeerStatus::Waiting);
+
+        loop {
+            if let Ok(cmd) = self.cmd_rx.try_recv() {
+                match cmd {
+                    PeerCommand::Disconnect => break,
+                    PeerCommand::RequestPiece(idx, size) => {
+                        self.client_chocking = false;
+                        self.client_interested = true;
+
+                        self.piece_info = Some((idx, size));
+
+                        if self.client_chocking && !self.send_message(Message::Unchoke).await {
+                            // Error sending message, drop.
+                            break;
+                        }
+
+                        if !self.client_interested && !self.send_message(Message::Interested).await {
+                            // Error sending message, drop.
+                            break;
+                        }
+                    }
+                }
             }
 
-            if self.peer_choked && !self.connection.send_message(Message::Unchoke).await {
-                self.info_peer.write().await.set_last_message_sent(Message::Unchoke);
-                return false;
+            if let Ok(piece) = self.complete_piece_rx.try_recv() {
+                if !self.send_message(Message::Have { piece: piece as u32 }).await {
+                    // Error sending message, drop.
+                    break;
+                }
             }
 
-            if !self.is_interested && !self.connection.send_message(Message::Interested).await {
-                self.info_peer.write().await.set_last_message_sent(Message::Interested);
-                return false;
+            if let Some(time_chocked) = self.chocked_since.as_ref() {
+                if time_chocked.elapsed() > Duration::from_secs(300) {
+                    // If we spent 5 minutes chocked, it's probably time to find another peer.
+                    break;
+                }
             }
 
-            let (block_offset, block_length) = {
-                if let Some(piece) = self.info_torrent.pieces.read().await.get(piece) {
-                    piece.get_block_request()
+            if let Some(time_waiting) = self.waiting_since.as_ref() {
+                if time_waiting.elapsed() > Duration::from_secs(120) {
+                    // Two whole minutes waiting for a Piece. yeet.
+                    break;
+                }
+            }
+            else if let Some((idx, size)) = self.piece_info.as_ref() {
+                let piece_idx = *idx as u32;
+                let block_offset = self.piece_data.len() as u32;
+                let block_length = (*size - self.piece_data.len() as u64).min(16384) as u32;
+
+                // TODO: Properly calculate block offset and length.
+                let message = Message::Request { piece_idx, block_offset, block_length };
+
+                self.update_peer_status(PeerStatus::Waiting);
+
+                if self.send_message(message).await {
+                    self.waiting_since = Some(Instant::now());
                 }
                 else {
-                    return false;
+                    break;
                 }
-            };
-
-            let message = Message::Request {
-                piece_idx: piece as u32,
-                block_offset,
-                block_length
-            };
-
-            if self.connection.send_message(message.clone()).await {
-                self.requested_piece = Some(piece);
-                
-                self.requested_size = 0;
-                self.requested_received = 0;
-                self.awaiting_response = true;
-                self.timer_received_data = Instant::now();
-
-                self.info_peer.write().await.set_last_message_sent(message);
-
-                true
             }
-            else {
-                false
+
+            if let Some(msg) = self.get_message().await {
+                match msg {
+                    Message::KeepAlive => {}
+                    Message::Choke => {
+                        self.peer_chocking = true;
+                        self.chocked_since = Some(Instant::now());
+
+                        self.update_peer_status(PeerStatus::Waiting);
+                    }
+                    Message::Unchoke => {
+                        // Some peers send a second Unchoke message after requesting a piece.
+                        // Only update status if we are actually chaging from Chocked to Unchoked.
+                        if self.peer_chocking {
+                            self.peer_chocking = false;
+                            self.chocked_since = None;
+
+                            if !self.available_pieces.is_empty() {
+                                self.update_peer_status(PeerStatus::Available { available_pieces: self.available_pieces.clone() });
+                            }
+                        }
+                    }
+                    Message::Interested => self.peer_interested = true,
+                    Message::NotInterested => self.peer_interested = false,
+                    Message::Have { piece } => {
+                        let piece = piece as usize;
+
+                        if piece >= self.available_pieces.len() {
+                            break;
+                        }
+                        
+                        self.available_pieces[piece] = true;
+                    }
+                    Message::Bitfield { bitfield } => {
+                        self.available_pieces = bitfield.pieces;
+                    }
+                    Message::Request { .. } => todo!(),
+                    Message::Piece { piece_idx, mut block_data, .. } => {
+                        if let Some((requested, size)) = self.piece_info.as_ref() {
+                            if piece_idx as usize == *requested {
+                                self.piece_data.append(&mut block_data);
+
+                                if self.piece_data.len() == *size as usize {
+                                    self.complete_piece_data_tx.send((*requested, self.piece_data.clone()))
+                                        .expect("Failed to send Piece data to Engine")
+                                    ;
+
+                                    self.piece_data = Vec::new();
+                                    self.piece_info = None;
+
+                                    self.update_peer_status(PeerStatus::Available { available_pieces: self.available_pieces.clone() });
+                                }
+                            }
+                            else {
+                                // Peer sent the wrong piece piece, drop.
+                                break;
+                            }
+                        }
+                        else {
+                            // Peer sent an unsolicited piece, drop.
+                            break;
+                        }
+
+                        self.waiting_since = None;
+                    }
+                    Message::Cancel { .. } => todo!(),
+                }
             }
+
+            time::sleep(Duration::from_millis(5)).await;
+        }
+
+        self.update_peer_status(PeerStatus::Dropped { assigned_piece: self.get_assigned_piece() });
+    }
+
+    /// Try to get a message from the TcpStream if available.
+    async fn get_message(&mut self) -> Option<Message> {
+        let mut message = None;
+        let mut length_buf = vec![0; 4];
+
+        let read_bytes = self.stream.try_read(&mut length_buf).ok()?;
+
+        if read_bytes == 4 {
+            let msg_length = length_buf.as_slice().get_u32() as usize;
+            let mut msg_buf = vec![0; msg_length];
+
+            let read_bytes = self.stream.read_exact(&mut msg_buf).await.ok()?;
+
+            if read_bytes == msg_length {
+                message = Some(msg_buf.into());
+            }
+        }
+
+        message
+    }
+
+    /// Try to send a message through the TcpStream. Returns false
+    /// if the message couldn't be sent.
+    async fn send_message(&mut self, message: Message) -> bool {
+        let msg_buf: Vec<u8> = message.into();
+
+        if let Ok(result) = time::timeout(Duration::from_secs(120), self.stream.write_all(&msg_buf)).await {
+            result.is_ok()
         }
         else {
             false
         }
     }
 
-    pub async fn handle_messages(&mut self) -> bool {
-        if let Some(message) = self.connection.get_message().await {
-            self.timer_last_message = Instant::now();
-            self.info_peer.write().await.set_last_message_received(message.clone());
+    async fn send_handshake(&mut self) -> bool {
+        let mut handshake = Vec::with_capacity(68);
+        handshake.push(19);
 
-            match message {
-                Message::KeepAlive => {}
+        // First 20 bytes of the handshake are used by the
+        // length-prefixed "BitTorrent protocol" string,
+        for protocol_byte in PROTOCOL.iter() {
+            handshake.push(*protocol_byte);
+        }
 
-                Message::Choke => self.is_choked = true,
-                Message::Unchoke => self.is_choked = false,
-                Message::Interested => self.peer_interested = true,
-                Message::NotInterested => self.peer_interested = false,
+        // then 8 reserved bytes (used for extension i think),
+        handshake.resize(handshake.len() + 8, 0);
 
-                Message::Have { piece } => {
-                    // Piece doesn't exist on the torrent, drop the peer.
-                    if piece > self.info_torrent.pieces.read().await.len() as u32 {
-                        return false;
-                    }
-                    
-                    self.peer_bitfield.piece_finished(piece);
+        // and finally, the info hash.
+        for info_hash_byte in self.info_hash.iter() {
+            handshake.push(*info_hash_byte);
+        }
+
+        // And finally, the peer id.
+        for peer_id_byte in PLACEHOLDER_ID.iter() {
+            handshake.push(*peer_id_byte);
+        }
+
+        self.update_peer_status(PeerStatus::Waiting);
+
+        let send_timeout = time::timeout(
+            Duration::from_secs(5),
+            self.stream.write_all(&handshake)
+        ).await;
+
+        if send_timeout.is_ok() {
+            let mut response_buf = vec![0; 68];
+            let receive_timeout = time::timeout(
+                Duration::from_secs(5),
+                self.stream.read(&mut response_buf)
+            ).await;
+
+            if let Ok(timeout_result) = receive_timeout {
+                if let Ok(bytes_read) = timeout_result {
+                    // TODO: Should probably check peer id and info hash.
+                    return bytes_read == response_buf.len();
                 }
-                Message::Bitfield { bitfield } => {
-                    self.peer_bitfield = bitfield;
-                }
-                Message::Request { piece_idx, block_offset, block_length } => {
-                    if self.info_torrent.bitfield_client.read().await.is_piece_available(piece_idx as usize) {
-                        if !self.is_choked && self.peer_interested {
-                            if let Some(piece) = self.info_torrent.pieces.read().await.get(piece_idx as usize) {
-                                let (start_file, start_position) = piece.get_offsets();
-                                let piece = utils::read_piece(self.info_torrent.clone(), start_file, start_position).await;
-                                let block_data = {
-                                    let block_offset = block_offset as usize;
-                                    let block_length = block_length as usize;
-
-                                    piece[block_offset..block_offset+block_length].to_vec()
-                                };
-
-                                let message = Message::Piece {
-                                    piece_idx,
-                                    block_offset,
-                                    block_data
-                                };
-
-                                if self.connection.send_message(message).await {
-                                    self.info_peer.write().await.add_uploaded(block_length as usize);
-                                    *self.info_torrent.total_uploaded.write().await += block_length as usize;
-                                }
-                                else {
-                                    return false;
-                                }
-                            }
-                        }
-                    }
-                    else {
-                        // Requested a piece we don't have, dropping.
-                        return false;
-                    }
-                }
-                Message::Piece { piece_idx,block_data, .. } => {
-                    if let Some(requested) = self.requested_piece.as_ref() {
-                        if *requested != piece_idx as usize {
-                            // Mismatched piece, drop the peer.
-                            return false;
-                        }
-                    }
-                    else {
-                        // Unsolicited data, drop the peer just in case.
-                        return false;
-                    }
-
-                    let (mut file_idx, mut file_position) = (0, 0);
-                    let mut piece_data = None;
-
-                    {
-                        let mut lock = self.info_torrent.pieces.write().await;
-
-                        if let Some(piece) = lock.get_mut(piece_idx as usize) {
-                            self.requested_received += block_data.len();
-                            self.info_peer.write().await.add_downloaded(block_data.len());
-                            *self.info_torrent.total_downloaded.write().await += block_data.len();
-    
-                            if piece.add_received_bytes(block_data) {
-                                if piece.check_piece() {
-                                    file_idx = piece.get_offsets().0;
-                                    file_position = piece.get_offsets().1;
-                                    piece_data = Some(piece.data().to_owned());
-                                    
-                                    piece.set_finished(true);
-                                    piece.set_requested(false);
-                                }
-                                else {
-                                    piece.discard();
-                                }
-    
-                                self.requested_size = 0;
-                                self.requested_piece = None;
-                            }
-                        }
-                        else {
-                            return false;
-                        }
-                    }
-
-                    self.awaiting_response = false;
-
-                    if let Some(piece_data) = piece_data {
-                        let total: usize = self.info_torrent.pieces().read().await
-                            .iter()
-                            .map(| piece | piece.length())
-                            .sum()
-                        ;
-
-                        let downloaded: usize = self.info_torrent.pieces().read().await
-                            .iter()
-                            .filter(| piece | piece.finished())
-                            .map(| piece | piece.length())
-                            .sum()
-                        ;
-
-                        let progress = TransferProgress::new((total - downloaded) as u64, 0, 0);
-
-                        self.transfer_progress_tx.send(progress).expect("failed to send transfer progress");
-                        utils::write_piece(self.info_torrent.clone(), &piece_data, &mut file_idx, &mut file_position).await;
-                    }
-                }
-                Message::Cancel { .. } => todo!(),
             }
         }
-
-        true
-    }
-}
-
-#[derive(Clone, PartialEq)]
-pub enum ConnectionStatus {
-    Dropped,
-    Connected,
-    Connecting,
-    Disconnected
-}
-
-impl Display for ConnectionStatus {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            ConnectionStatus::Dropped => write!(f, "Dropped"),
-            ConnectionStatus::Connected => write!(f, "Connected"),
-            ConnectionStatus::Connecting => write!(f, "Connecting"),
-            ConnectionStatus::Disconnected => write!(f, "Disconnected"),
-        }
-    }
-}
-
-#[derive(Clone)]
-pub struct PeerInfo {
-    status: ConnectionStatus,
-
-    uploaded_total: usize,
-    downloaded_total: usize,
-
-    last_message_sent: Option<Message>,
-    last_message_received: Option<Message>,
-
-    address: SocketAddrV4,
-    start_time: Instant,
-}
-
-impl PeerInfo {
-    pub fn new(address: SocketAddrV4) -> PeerInfo {
-        PeerInfo {
-            status: ConnectionStatus::Disconnected,
-
-            uploaded_total: 0,
-            downloaded_total: 0,
-
-            last_message_sent: None,
-            last_message_received: None,
-
-            address,
-            start_time: Instant::now()
-        }
+        
+        false
     }
 
-    pub fn status(&self) -> ConnectionStatus {
-        self.status.clone()
-    }
-
-    pub fn uploaded_total(&self) -> usize {
-        self.uploaded_total
-    }
-
-    pub fn downloaded_total(&self) -> usize {
-        self.downloaded_total
-    }
-
-    pub fn last_message_sent(&self) -> Option<&Message> {
-        self.last_message_sent.as_ref()
-    }
-
-    pub fn last_message_received(&self) -> Option<&Message> {
-        self.last_message_received.as_ref()
-    }
-
-    pub fn address(&self) -> SocketAddrV4 {
-        self.address
-    }
-
-    pub fn set_status(&mut self, status: ConnectionStatus) {
-        self.status = status;
-    }
-
-    pub fn set_last_message_sent(&mut self, last_message: Message) {
-        self.last_message_sent = Some(last_message);
-    }
-
-    pub fn set_last_message_received(&mut self, last_message_received: Message) {
-        self.last_message_received = Some(last_message_received);
-    }
-
-    pub fn add_uploaded(&mut self, value: usize) {
-        self.uploaded_total += value;
-    }
-
-    pub fn add_downloaded(&mut self, value: usize) {
-        self.downloaded_total += value;
-    }
-
-    pub fn start_time(&self) -> &Instant {
-        &self.start_time
+    fn update_peer_status(&mut self, status: PeerStatus) {
+        self.peer_status_tx.send(status)
+            .expect("Failed to communicate with Engine");
     }
 }
 
@@ -405,6 +382,12 @@ impl Bitfield {
     pub fn empty(pieces: usize) -> Bitfield {
         Bitfield {
             pieces: vec![false; pieces]
+        }
+    }
+
+    pub fn from_pieces(pieces: Vec<bool>) -> Bitfield {
+        Bitfield {
+            pieces
         }
     }
 

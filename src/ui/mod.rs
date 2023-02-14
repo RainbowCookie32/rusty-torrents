@@ -20,9 +20,7 @@ use crossterm::execute;
 use crossterm::event::{DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEventKind, MouseEventKind};
 use crossterm::terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen};
 
-use crate::engine::TorrentInfo;
-use crate::engine::peer::PeerInfo;
-use crate::engine::TransferProgress;
+use crate::engine::transfer::TransferProgress;
 
 pub struct App {
     selected_tab: usize,
@@ -32,7 +30,7 @@ pub struct App {
     piece_state: TableState,
 
     transfer_size: usize,
-    transfer_peers: Vec<PeerInfo>,
+    transfer_peers: Vec<()>,
     transfer_progress: TransferProgress,
 
     stop_tx: oneshot::Sender<()>,

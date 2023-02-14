@@ -1,224 +1,72 @@
-pub mod peer;
-mod file;
-mod piece;
-mod utils;
+mod peer;
 mod tracker;
+mod transfer;
 
-use std::sync::Arc;
+use std::path::PathBuf;
 use std::net::SocketAddrV4;
-use std::path::{Path, PathBuf};
+use std::collections::HashMap;
 
-use rand::Rng;
+use tokio::fs;
+use tokio::sync::{broadcast, mpsc, oneshot, watch};
 
-use tokio::sync::mpsc;
-use tokio::sync::oneshot;
-use tokio::sync::broadcast;
-use tokio::sync::RwLock;
-
-use file::File;
-use piece::Piece;
-use peer::{Bitfield, ConnectionStatus, Peer, PeerInfo};
+use tracker::TrackersHandler;
+use peer::{PeerCommand, PeerStatus};
+use transfer::{Transfer, TransferProgress};
 
 use crate::bencode::ParsedTorrent;
 
-use self::tracker::TrackersHandler;
-pub use self::tracker::TransferProgress;
-
-pub struct TorrentInfo {
-    data: ParsedTorrent,
-    piece_length: u64,
-
-    pub total_uploaded: Arc<RwLock<usize>>,
-    pub total_downloaded: Arc<RwLock<usize>>,
-
-    files: Arc<RwLock<Vec<File>>>,
-    pieces: Arc<RwLock<Vec<Piece>>>,
-    peers: Arc<RwLock<Vec<Arc<RwLock<PeerInfo>>>>>,
-
-    bitfield_client: Arc<RwLock<Bitfield>>
-}
-
-impl TorrentInfo {
-    pub fn get_handshake(&self) -> Vec<u8> {
-        let id: String = vec!['e'; 20].iter().collect();
-        let info_hash = self.data.info().info_hash();
-        let mut handshake = b"BitTorrent protocol".to_vec();
-
-        handshake.insert(0, 19);
-
-        for offset in 0..8 {
-            handshake.insert(20 + offset, 0);
-        }
-    
-        for (offset, byte) in info_hash.iter().enumerate() {
-            handshake.insert(28 + offset, *byte);
-        }
-        
-        for (offset, c) in id.chars().enumerate() {
-            handshake.insert(48 + offset, c as u8);
-        }
-
-        handshake
-    }
-
-    pub fn is_complete(&self) -> bool {
-        if let Ok(pieces) = self.pieces.try_read() {
-            pieces.iter().filter(|p| !p.finished()).count() == 0
-        }
-        else {
-            false
-        }
-    }
-
-    pub async fn release_piece(&self, idx: usize) {
-        if let Some(piece) = self.pieces.write().await.get_mut(idx) {
-            piece.set_requested(false);
-        }
-    }
-
-    pub async fn piece_requested(&self, idx: usize) {
-        if let Some(piece) = self.pieces.write().await.get_mut(idx) {
-            piece.set_requested(true);
-        }
-    }
-
-    // Always check that there are unfinished pieces before calling this!
-    pub async fn get_unfinished_piece_idx(&self) -> usize {
-        assert!(self.missing_pieces_count().await > 0);
-
-        let mut idx: usize;
-        let pieces = self.pieces.read().await;
-
-        let mut rng = rand::thread_rng();
-        
-        loop {
-            idx = rng.gen_range(0..pieces.len());
-            
-            if !&pieces[idx].requested() && !&pieces[idx].finished() {
-                break;
-            }
-        }
-        
-        idx
-    }
-
-    pub async fn pieces_count(&self) -> usize {
-        self.pieces.read().await.len()
-    }
-
-    pub async fn missing_pieces_count(&self) -> usize {
-        self.pieces.read()
-            .await
-            .iter()
-            .filter(| piece | !piece.requested() && !piece.finished())
-            .count()
-    }
-
-    /// Get a reference to the torrent info's data.
-    pub fn data(&self) -> &ParsedTorrent {
-        &self.data
-    }
-
-    pub fn pieces(&self) -> Arc<RwLock<Vec<Piece>>> {
-        self.pieces.clone()
-    }
-
-    pub fn peers(&self) -> Arc<RwLock<Vec<Arc<RwLock<PeerInfo>>>>> {
-        self.peers.clone()
-    }
-}
-
 pub struct Engine {
+    transfer: Transfer,
+
     stop_rx: oneshot::Receiver<()>,
+    // FIXME: This is lazyness. I could create the channel later and have
+    // peers_tx be an Option, but lazyness.
+    peers_tx: mpsc::Sender<Vec<SocketAddrV4>>,
     peers_rx: mpsc::Receiver<Vec<SocketAddrV4>>,
+    
+    complete_piece_tx: broadcast::Sender<usize>,
     transfer_progress_tx: broadcast::Sender<TransferProgress>,
 
-    torrent_info: Arc<TorrentInfo>,
+    peers_piece_data_tx: mpsc::UnboundedSender<(usize, Vec<u8>)>,
+    peers_piece_data_rx: mpsc::UnboundedReceiver<(usize, Vec<u8>)>,
+
+    peers_status: HashMap<SocketAddrV4, PeerStatus>,
+    peers_status_rx: HashMap<SocketAddrV4, watch::Receiver<PeerStatus>>,
+
+    peers_cmd_tx: HashMap<SocketAddrV4, mpsc::UnboundedSender<PeerCommand>>,
 }
 
 impl Engine {
     pub async fn init(torrent_path: PathBuf, output_path: PathBuf, stop_rx: oneshot::Receiver<()>) -> Engine {
-        let torrent_data = tokio::fs::read(torrent_path).await.expect("failed to read torrent file");
+        let torrent_data = fs::read(torrent_path).await.expect("failed to read torrent file");
+        let torrent_data =  ParsedTorrent::new(torrent_data);
 
-        let data = ParsedTorrent::new(torrent_data);
-        let piece_length = data.info().piece_length();
-        
-        let mut trackers_list: Vec<String> = {
-            data.announce_list()
-                .iter()
-                .filter(| url | !url.is_empty())
-                .map(| url | url.to_owned())
-                .collect()
-        };
+        let transfer = Transfer::create(torrent_data, output_path.as_path()).await;
 
-        trackers_list.insert(0, data.announce().to_owned());
-        
-        let torrent_files = Engine::build_file_list(&output_path, data.info().files(), piece_length).await;
-        let torrent_files = Arc::new(RwLock::new(torrent_files));
-
-        let pieces = data.info().pieces().len();
-
-        let torrent_info = TorrentInfo {
-            data,
-            piece_length,
-
-            total_uploaded: Arc::new(RwLock::new(0)),
-            total_downloaded: Arc::new(RwLock::new(0)),
-
-            files: torrent_files,
-            pieces: Arc::new(RwLock::new(Vec::new())),
-            peers: Arc::new(RwLock::new(Vec::new())),
-
-            bitfield_client: Arc::new(RwLock::new(Bitfield::empty(pieces)))
-        };
-
-        let torrent_info = Arc::new(torrent_info);
-        
         let (peers_tx, peers_rx) = mpsc::channel(5);
-        let (transfer_progress_tx, transfer_progress_rx) = broadcast::channel(5);
 
-        utils::check_torrent(torrent_info.clone()).await;
-
-        let total: usize = torrent_info.pieces().read().await
-            .iter()
-            .map(| piece | piece.length())
-            .sum()
-        ;
-
-        let downloaded: usize = torrent_info.pieces().read().await
-            .iter()
-            .filter(| piece | piece.finished())
-            .map(| piece | piece.length())
-            .sum()
-        ;
-        
-        let progress = TransferProgress::new((total - downloaded) as u64, 0, 0);
-
-        transfer_progress_tx.send(progress.clone()).unwrap();
-
-        let trackers_handler = TrackersHandler::init(
-            *torrent_info.data().info().info_hash(),
-            progress,
-            trackers_list,
-            peers_tx,
-            transfer_progress_rx
-        );
-
-        tokio::spawn(async move {
-            trackers_handler.start().await;
-        });
+        let (complete_piece_tx, _) = broadcast::channel(50);
+        let (transfer_progress_tx, _) = broadcast::channel(5);
+        let (peers_piece_data_tx, peers_piece_data_rx) = mpsc::unbounded_channel();
 
         Engine {
+            transfer,
+
             stop_rx,
+            peers_tx,
             peers_rx,
+
+            complete_piece_tx,
             transfer_progress_tx,
 
-            torrent_info
-        }
-    }
+            peers_piece_data_tx,
+            peers_piece_data_rx,
 
-    pub fn info(&self) -> Arc<TorrentInfo> {
-        self.torrent_info.clone()
+            peers_status: HashMap::new(),
+            peers_status_rx: HashMap::new(),
+
+            peers_cmd_tx: HashMap::new()
+        }
     }
 
     pub fn get_progress_rx(&self) -> broadcast::Receiver<TransferProgress> {
@@ -227,6 +75,9 @@ impl Engine {
 
     pub async fn start_torrent(&mut self) {
         let mut complete = false;
+        
+        self.transfer.check_torrent().await;
+        self.start_trackers_task().await;
 
         loop {
             if self.stop_rx.try_recv().is_ok() {
@@ -238,124 +89,161 @@ impl Engine {
                 self.add_peers(list).await;
             }
 
-            for info in self.torrent_info.peers.read().await.iter() {
-                if info.read().await.status() != ConnectionStatus::Disconnected {
-                    continue;
+            for (addr, rx) in self.peers_status_rx.iter_mut() {
+                if rx.has_changed().unwrap_or_default() {
+                    self.peers_status.insert(*addr, rx.borrow_and_update().clone());
                 }
-
-                let info_peer = info.clone();
-                let info_torrent = self.torrent_info.clone();
-                let tx = self.transfer_progress_tx.clone();
-    
-                tokio::spawn(async move {
-                    let info_peer = info_peer;
-                    let info_torrent = info_torrent;
-
-                    info_peer.write().await.set_status(ConnectionStatus::Connecting);
-
-                    if let Some(mut peer) = Peer::connect(info_peer.clone(), info_torrent.clone(), tx).await {
-                        info_peer.write().await.set_status(ConnectionStatus::Connected);
-
-                        loop {
-                            if !peer.handle_messages().await {
-                                peer.release_requested_piece().await;
-                                info_peer.write().await.set_status(ConnectionStatus::Dropped);
-    
-                                break;
-                            }
-        
-                            if peer.should_request_piece() {
-                                let piece = peer.requested_piece();
-    
-                                if let Some(piece) = piece {
-                                    if peer.request_piece(piece).await {
-                                        info_torrent.piece_requested(piece).await;
-                                    }
-                                }
-                                else if info_torrent.missing_pieces_count().await > 0 {
-                                    let piece = info_torrent.get_unfinished_piece_idx().await;
-                                
-                                    if peer.request_piece(piece).await {
-                                        info_torrent.piece_requested(piece).await;
-                                    }
-                                }
-                                else {
-                                    // peer.send_keep_alive().await;
-                                }
-                            }
-    
-                            if peer.should_drop() {
-                                peer.release_requested_piece().await;
-                                info_peer.write().await.set_status(ConnectionStatus::Dropped);
-    
-                                break;
-                            }
-    
-                            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
-                        }
-                    }
-                    else {
-                        info_peer.write().await.set_status(ConnectionStatus::Dropped);
-                    }
-                });
             }
 
-            if self.torrent_info.is_complete() && !complete {
+            for (addr, status) in self.peers_status.iter_mut() {
+                if let PeerStatus::Available { available_pieces } = status {
+                    let missing_pieces: Vec<usize> = self.transfer.pieces_status()
+                        .iter()
+                        .enumerate()
+                        .filter(| (_, status) | !(**status))
+                        .filter(| (i, _) | !self.transfer.is_piece_assigned(*i))
+                        .map(| (i, _) | i)
+                        .collect()
+                    ;
+
+                    let target_piece = available_pieces
+                        .iter()
+                        .enumerate()
+                        .find(| (i, status) | {
+                            if **status {
+                                missing_pieces.contains(i)
+                            }
+                            else {
+                                false
+                            }
+                        })
+                    ;
+
+                    if let Some((idx, _)) = target_piece {
+                        let mut drop_peer = true;
+                        println!("trying to assing piece {idx} to peer {addr}");
+
+                        if let Some(tx) = self.peers_cmd_tx.get(addr) {
+                            if !tx.is_closed() && tx.send(PeerCommand::RequestPiece(idx, self.transfer.piece_length())).is_ok() {
+                                self.transfer.assign_piece(idx);
+                                drop_peer = false;
+                            }
+                        }
+
+                        if drop_peer {
+                            *status = PeerStatus::Dropped { assigned_piece: None };
+                        }
+                    }
+                }
+            }
+
+            if let Ok((piece, data)) = self.peers_piece_data_rx.try_recv() {
+                if self.transfer.add_complete_piece(piece, data).await {
+                    println!("piece {piece} was written to disk");
+
+                    self.complete_piece_tx
+                        .send(piece)
+                        .expect("failed to send complete piece message")
+                    ;
+
+                    self.transfer_progress_tx
+                        .send(self.transfer.get_progress())
+                        .expect("failed to send TransferProgress message")
+                    ;
+                }
+                else {
+                    println!("piece was invalid");
+                }
+            }
+
+            if self.transfer.is_complete() && !complete {
                 complete = true;
+                println!("all done, have fun");
                 // self.send_message_to_trackers(TrackerEvent::Completed, true).await;
             }
             
-            self.clear_peers_list().await;
+            self.clear_peers_list();
             tokio::time::sleep(std::time::Duration::from_millis(50)).await;
         }
     }
 
+    async fn start_trackers_task(&self) {
+        let info_hash = self.transfer.info_hash();
+        let progress = self.transfer.get_progress();
+
+        let trackers = self.transfer.get_trackers();
+
+        let peers_tx = self.peers_tx.clone();
+        let progress_rx = self.transfer_progress_tx.subscribe();
+
+        tokio::spawn(async move {
+            let trackers_handler = TrackersHandler::init(info_hash, progress, trackers, peers_tx, progress_rx);
+            trackers_handler.start().await;
+        });
+    }
+
     async fn add_peers(&mut self, peers: Vec<SocketAddrV4>) {
+        let peers: Vec<SocketAddrV4> = peers
+            .into_iter()
+            .filter(| addr | !self.peers_cmd_tx.contains_key(addr))
+            .collect()
+        ;
+
+        println!("deduplicated peers, new list is {}", peers.len());
+
         for address in peers {
-            let mut skip = false;
+            let info_hash = self.transfer.info_hash();
+            let completed_pieces = self.transfer.pieces_status().clone();
 
-            for peer in self.torrent_info.peers().read().await.iter() {
-                if peer.read().await.address() == address {
-                    skip = true;
-                    break;
+            let (cmd_tx, cmd_rx) = mpsc::unbounded_channel();
+            let (peer_status_tx, peer_status_rx) = watch::channel(PeerStatus::Waiting);
+            
+            let complete_piece_rx = self.complete_piece_tx.subscribe();
+            let complete_piece_data_tx = self.peers_piece_data_tx.clone();
+
+            self.peers_cmd_tx.insert(address, cmd_tx);
+            self.peers_status_rx.insert(address, peer_status_rx);
+
+            tokio::spawn(async move {
+                let new_peer = peer::TcpPeer::connect(
+                    address,
+                    info_hash,
+                    completed_pieces,
+                    cmd_rx,
+                    peer_status_tx,
+                    complete_piece_rx,
+                    complete_piece_data_tx
+                ).await;
+    
+                if let Some(peer) = new_peer {
+                    peer.connect_to_peer().await;
                 }
-            }
-
-            if skip {
-                continue;
-            }
-
-            let info_peer = Arc::new(RwLock::new(PeerInfo::new(address)));
-            self.torrent_info.peers.write().await.push(info_peer);
+            });
         }
     }
 
-    async fn clear_peers_list(&mut self) {
-        if let Ok(mut lock) = self.torrent_info.peers.try_write() {
-            let infos = lock.to_owned();
+    fn clear_peers_list(&mut self) {
+        let peers_to_remove: Vec<(SocketAddrV4, PeerStatus)> = self.peers_status
+            .iter()
+            .filter(| (_, v) | matches!(*v, PeerStatus::Dropped { assigned_piece: _ }))
+            .map(| (k, v) | (*k, v.clone()))
+            .collect()
+        ;
 
-            *lock = infos
-                .into_iter()
-                .filter(| i | {
-                    if let Ok(i) = i.try_read() {
-                        i.status() != ConnectionStatus::Dropped
+        if !peers_to_remove.is_empty() {
+            println!("dropping {} peers", peers_to_remove.len());
+
+            for (peer, status) in peers_to_remove {
+                if let PeerStatus::Dropped { assigned_piece } = status {
+                    if let Some(piece) = assigned_piece {
+                        self.transfer.unassign_piece(piece);
                     }
-                    else {
-                        true
-                    }
-                })
-                .collect()
-            ;
+                }
+    
+                self.peers_cmd_tx.remove(&peer);
+                self.peers_status.remove(&peer);
+                self.peers_status_rx.remove(&peer);
+            }
         }
-    }
-
-    async fn build_file_list(output_path: &Path, files_data: &[(String, u64)], piece_length: u64) -> Vec<File> {
-        let mut list = Vec::new();
-
-        for (filename, size) in files_data {
-            list.push(File::new(output_path, filename, *size, piece_length).await);
-        }
-
-        list
     }
 }
