@@ -149,7 +149,7 @@ impl Tracker {
         let event = if reannounce { "started" } else {""};
 
         let query_url = format!(
-            "{}?info_hash={}&peer_id={}&port=6881&uploaded={}&downloaded={}&left={}&compact=1&numwant=100{}",
+            "{}?info_hash={}&peer_id={}&port=6881&uploaded={}&downloaded={}&left={}&compact=1&numwant=100&event={}",
             self.url, hash, &self.peer_id, progress.uploaded, progress.downloaded, progress.left, event
         );
 
