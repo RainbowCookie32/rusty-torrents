@@ -176,7 +176,9 @@ impl Tracker {
         }
 
         if let Some(interval) = response_dictionary_hm.get("interval") {
-            self.reannounce_rate = Some(Duration::from_secs(interval.get_int()));
+            // Reannounce rates can be a bit on the high side, and sometimes we can end up with slow peers.
+            // Trackers *usually* don't seem to mind going below their specified rate, as long as they don't get spammed.
+            self.reannounce_rate = Some(Duration::from_secs(interval.get_int().min(120)));
         }
 
         self.last_announce_time = Some(Instant::now());
