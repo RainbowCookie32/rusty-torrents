@@ -368,8 +368,14 @@ impl TcpPeer {
     }
 
     fn update_peer_status(&mut self, status: PeerStatus) {
-        self.peer_status_tx.send(status)
-            .expect("Failed to communicate with Engine");
+        // Only send Available messages when we don't have a Piece already assigned.
+        // This causes Engine to assign another and have the old Piece get stuck in limbo.
+        if let PeerStatus::Available { .. } = &status {
+            if self.piece_info.is_none() {
+                self.peer_status_tx.send(status)
+                    .expect("Failed to communicate with Engine");
+            }
+        }
     }
 }
 
