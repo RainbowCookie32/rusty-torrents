@@ -376,6 +376,10 @@ impl TcpPeer {
                     .expect("Failed to communicate with Engine");
             }
         }
+        else {
+            self.peer_status_tx.send(status)
+                .expect("Failed to communicate with Engine");
+        }
     }
 }
 
