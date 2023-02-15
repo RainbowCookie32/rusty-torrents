@@ -81,6 +81,8 @@ pub struct TcpPeer {
     chocked_since: Option<Instant>,
     /// The amount of time we've been waiting for the peer to reply.
     waiting_since: Option<Instant>,
+    /// The amount of time that passed since the Piece assigned.
+    time_since_assign: Option<Instant>
 }
 
 impl TcpPeer {
@@ -121,7 +123,8 @@ impl TcpPeer {
                 complete_piece_data_tx,
     
                 chocked_since: None,
-                waiting_since: None
+                waiting_since: None,
+                time_since_assign: None,
             }
         )
     }
@@ -159,6 +162,7 @@ impl TcpPeer {
                         self.client_interested = true;
 
                         self.piece_info = Some((idx, size));
+                        self.time_since_assign = Some(Instant::now());
 
                         if self.client_chocking && !self.send_message(Message::Unchoke).await {
                             // Error sending message, drop.
@@ -198,7 +202,6 @@ impl TcpPeer {
                 let block_offset = self.piece_data.len() as u32;
                 let block_length = (*size - self.piece_data.len() as u64).min(16384) as u32;
 
-                // TODO: Properly calculate block offset and length.
                 let message = Message::Request { piece_idx, block_offset, block_length };
 
                 self.update_peer_status(PeerStatus::Waiting);
@@ -207,6 +210,16 @@ impl TcpPeer {
                     self.waiting_since = Some(Instant::now());
                 }
                 else {
+                    break;
+                }
+            }
+
+            if let Some(time_since_assign) = self.time_since_assign.as_ref() {
+                // Pieces are usually small (biggest I've seen so far was 1.5MB).
+                // If we can't get a whole piece from a Peer in less than 20 seconds,
+                // then we might have a pretty slow peer on our hands.
+                if time_since_assign.elapsed() > Duration::from_secs(20) {
+                    println!("slow peer detected, dropping...");
                     break;
                 }
             }
@@ -257,8 +270,9 @@ impl TcpPeer {
                                         .expect("Failed to send Piece data to Engine")
                                     ;
 
-                                    self.piece_data = Vec::new();
                                     self.piece_info = None;
+                                    self.piece_data = Vec::new();
+                                    self.time_since_assign = None;
 
                                     self.update_peer_status(PeerStatus::Available { available_pieces: self.available_pieces.clone() });
                                 }
