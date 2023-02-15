@@ -283,6 +283,20 @@ impl TcpPeer {
         }
 
         self.update_peer_status(PeerStatus::Dropped { assigned_piece: self.get_assigned_piece() });
+
+        if let Some((piece, size)) = self.piece_info {
+            let piece_idx = piece as u32;
+            let block_offset = self.piece_data.len() as u32;
+            let block_length = (size - self.piece_data.len() as u64).min(16384) as u32;
+
+            let message = Message::Cancel {
+                piece_idx,
+                block_offset,
+                block_length
+            };
+
+            self.send_message(message).await;
+        }
     }
 
     /// Try to get a message from the TcpStream if available.
