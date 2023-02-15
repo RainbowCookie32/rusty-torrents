@@ -81,7 +81,13 @@ impl Engine {
 
         loop {
             if self.stop_rx.try_recv().is_ok() {
-                // self.send_message_to_trackers(TrackerEvent::Stopped, true).await;
+                for cmd_tx in self.peers_cmd_tx.values() {
+                    if cmd_tx.send(PeerCommand::Disconnect).is_err() {
+                        println!("failed to send disconnect command to peer");
+                    }
+                }
+
+                // TODO: Send stopped event to Trackers.
                 break;
             }
 
