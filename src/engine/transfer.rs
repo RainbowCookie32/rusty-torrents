@@ -207,24 +207,37 @@ impl Transfer {
     async fn read_piece(&mut self, piece: usize) -> Vec<u8> {
         assert!(piece < self.pieces_status.len());
 
-        let (piece_file_idx, piece_offset) = &self.pieces_offsets[piece];
+        let piece_length = self.piece_length as usize;
+        let (piece_file_idx, piece_offset) = self.pieces_offsets[piece];
+        let mut piece_file = &mut self.files[piece_file_idx];
 
-        let mut piece_buf = vec![0; self.piece_length as usize];
-        let mut piece_file = &mut self.files[*piece_file_idx];
+        let file_size = piece_file.metadata().await.unwrap().len();
+        let buf_size = {
+            let remaining = file_size as usize - piece_offset;
+
+            if remaining >= piece_length {
+                piece_length
+            }
+            else {
+                remaining
+            }
+        };
+
+        let mut piece_buf = vec![0; buf_size];
 
         piece_file
-            .seek(SeekFrom::Start(*piece_offset as u64))
+            .seek(SeekFrom::Start(piece_offset as u64))
             .await
             .expect("file seek failed")
         ;
 
-        if let Ok(read_bytes) = piece_file.read(&mut piece_buf).await {
-            if read_bytes != piece_buf.len() && piece != (self.pieces_status.len() - 1) {
-                let missing_bytes = piece_buf.len() - read_bytes;
+        if let Ok(read_bytes) = piece_file.read_exact(&mut piece_buf).await {
+            if read_bytes != piece_length && piece != (self.pieces_status.len() - 1) {
+                let missing_bytes = piece_length - read_bytes;
                 let mut remaining_buf = vec![0; missing_bytes];
 
                 piece_buf.resize(read_bytes, 0);
-                piece_file = &mut self.files[*piece_file_idx + 1];
+                piece_file = &mut self.files[piece_file_idx + 1];
 
                 piece_file
                     .seek(SeekFrom::Start(0))
@@ -232,7 +245,7 @@ impl Transfer {
                     .expect("file seek failed")
                 ;
 
-                if let Ok(read_bytes) = piece_file.read(&mut remaining_buf).await {
+                if let Ok(read_bytes) = piece_file.read_exact(&mut remaining_buf).await {
                     if read_bytes == remaining_buf.len() {
                         piece_buf.append(&mut remaining_buf);
                     }
