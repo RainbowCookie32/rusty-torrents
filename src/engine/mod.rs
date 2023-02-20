@@ -18,6 +18,9 @@ use crate::bencode::ParsedTorrent;
 pub struct Engine {
     transfer: Transfer,
 
+    /// A map of peers and their assigned pieces.
+    assigned_pieces: HashMap<SocketAddrV4, usize>,
+
     stop_rx: oneshot::Receiver<()>,
     // FIXME: This is lazyness. I could create the channel later and have
     // peers_tx be an Option, but lazyness.
@@ -51,6 +54,8 @@ impl Engine {
 
         Engine {
             transfer,
+
+            assigned_pieces: HashMap::new(),
 
             stop_rx,
             peers_tx,
@@ -103,11 +108,13 @@ impl Engine {
 
             for (addr, status) in self.peers_status.iter_mut() {
                 if let PeerStatus::Available { available_pieces } = status {
+                    self.assigned_pieces.remove(addr);
+
                     let missing_pieces: Vec<usize> = self.transfer.pieces_status()
                         .iter()
                         .enumerate()
                         .filter(| (_, status) | !(**status))
-                        .filter(| (i, _) | !self.transfer.is_piece_assigned(*i))
+                        .filter(| (i, _) | !self.assigned_pieces.values().any(| piece_idx | i == piece_idx))
                         .map(| (i, _) | i)
                         .collect()
                     ;
@@ -131,7 +138,7 @@ impl Engine {
 
                         if let Some(tx) = self.peers_cmd_tx.get(addr) {
                             if !tx.is_closed() && tx.send(PeerCommand::RequestPiece(idx, self.transfer.piece_length())).is_ok() {
-                                self.transfer.assign_piece(idx);
+                                self.assigned_pieces.insert(*addr, idx);
                                 drop_peer = false;
                             }
                         }
@@ -240,10 +247,8 @@ impl Engine {
             println!("dropping {} peers", peers_to_remove.len());
 
             for (peer, status) in peers_to_remove {
-                if let PeerStatus::Dropped { assigned_piece } = status {
-                    if let Some(piece) = assigned_piece {
-                        self.transfer.unassign_piece(piece);
-                    }
+                if let PeerStatus::Dropped { .. } = status {
+                    self.assigned_pieces.remove(&peer);
                 }
     
                 self.peers_cmd_tx.remove(&peer);

@@ -25,8 +25,6 @@ pub struct Transfer {
     piece_length: u64,
     /// Whether a piece is complete or not.
     pieces_status: Vec<bool>,
-    /// Pieces assigned to a Peer.
-    pieces_assigned: Vec<usize>,
     /// The file and position where each piece starts.
     pieces_offsets: Vec<(usize, usize)>,
 
@@ -72,7 +70,6 @@ impl Transfer {
 
             piece_length,
             pieces_status: vec![false; piece_count],
-            pieces_assigned: Vec::with_capacity(piece_count),
             pieces_offsets,
             
             files,
@@ -103,10 +100,6 @@ impl Transfer {
             .count() == 0
     }
 
-    pub fn is_piece_assigned(&self, piece: usize) -> bool {
-        self.pieces_assigned.contains(&piece)
-    }
-
     pub fn get_progress(&self) -> TransferProgress {
         TransferProgress {
             left: self.left,
@@ -130,24 +123,6 @@ impl Transfer {
         trackers_list.dedup();
 
         trackers_list
-    }
-
-    pub fn assign_piece(&mut self, piece: usize) {
-        self.pieces_assigned.push(piece);
-    }
-
-    pub fn unassign_piece(&mut self, piece: usize) {
-        let idx = self
-            .pieces_assigned
-            .iter()
-            .enumerate()
-            .find(| (_, p) | **p == piece)
-            .map(| (idx, _) | idx)
-        ;
-
-        if let Some(idx) = idx {
-            self.pieces_assigned.remove(idx);
-        }
     }
 
     pub async fn check_torrent(&mut self) {
@@ -193,13 +168,10 @@ impl Transfer {
             self.left -= data.len() as u64;
             self.pieces_status[piece] = true;
             
-            self.unassign_piece(piece);
             self.write_piece(piece, data).await;
-
             true
         }
         else {
-            self.unassign_piece(piece);
             false
         }
     }
