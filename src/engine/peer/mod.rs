@@ -216,9 +216,9 @@ impl TcpPeer {
 
             if let Some(time_since_assign) = self.time_since_assign.as_ref() {
                 // Pieces are usually small (biggest I've seen so far was 1.5MB).
-                // If we can't get a whole piece from a Peer in less than 20 seconds,
+                // If we can't get a whole piece from a Peer in less than 60 seconds,
                 // then we might have a pretty slow peer on our hands.
-                if time_since_assign.elapsed() > Duration::from_secs(20) {
+                if time_since_assign.elapsed() > Duration::from_secs(60) {
                     println!("slow peer detected, dropping...");
                     break;
                 }
