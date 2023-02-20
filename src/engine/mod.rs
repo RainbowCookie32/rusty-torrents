@@ -246,11 +246,8 @@ impl Engine {
         if !peers_to_remove.is_empty() {
             println!("dropping {} peers", peers_to_remove.len());
 
-            for (peer, status) in peers_to_remove {
-                if let PeerStatus::Dropped { .. } = status {
+            for (peer, _) in peers_to_remove {
                     self.assigned_pieces.remove(&peer);
-                }
-    
                 self.peers_cmd_tx.remove(&peer);
                 self.peers_status.remove(&peer);
                 self.peers_status_rx.remove(&peer);
