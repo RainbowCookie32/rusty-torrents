@@ -107,46 +107,83 @@ impl Engine {
             }
 
             for (addr, status) in self.peers_status.iter_mut() {
-                if let PeerStatus::Available { available_pieces } = status {
-                    self.assigned_pieces.remove(addr);
+                match status {
+                    PeerStatus::Connected { available_pieces } => {
+                        let missing_pieces: Vec<usize> = self.transfer.pieces_status()
+                            .iter()
+                            .enumerate()
+                            .filter(| (_, status) | !(**status))
+                            .filter(| (i, _) | !self.assigned_pieces.values().any(| piece_idx | i == piece_idx))
+                            .map(| (i, _) | i)
+                            .collect()
+                        ;
 
-                    let missing_pieces: Vec<usize> = self.transfer.pieces_status()
-                        .iter()
-                        .enumerate()
-                        .filter(| (_, status) | !(**status))
-                        .filter(| (i, _) | !self.assigned_pieces.values().any(| piece_idx | i == piece_idx))
-                        .map(| (i, _) | i)
-                        .collect()
-                    ;
+                        let target_piece = available_pieces
+                            .iter()
+                            .enumerate()
+                            .find(| (i, status) | {
+                                if **status {
+                                    missing_pieces.contains(i)
+                                }
+                                else {
+                                    false
+                                }
+                            })
+                        ;
 
-                    let target_piece = available_pieces
-                        .iter()
-                        .enumerate()
-                        .find(| (i, status) | {
-                            if **status {
-                                missing_pieces.contains(i)
+                        if target_piece.is_some() {
+                            if let Some(tx) = self.peers_cmd_tx.get(addr) {
+                                if tx.is_closed() || tx.send(PeerCommand::SendInterested).is_err() {
+                                    *status = PeerStatus::Dropped { assigned_piece: None };
+                                }
                             }
                             else {
-                                false
+                                *status = PeerStatus::Dropped { assigned_piece: None };
                             }
-                        })
-                    ;
-
-                    if let Some((idx, _)) = target_piece {
-                        let mut drop_peer = true;
-                        println!("trying to assing piece {idx} to peer {addr}");
-
-                        if let Some(tx) = self.peers_cmd_tx.get(addr) {
-                            if !tx.is_closed() && tx.send(PeerCommand::RequestPiece(idx, self.transfer.piece_length())).is_ok() {
-                                self.assigned_pieces.insert(*addr, idx);
-                                drop_peer = false;
-                            }
-                        }
-
-                        if drop_peer {
-                            *status = PeerStatus::Dropped { assigned_piece: None };
                         }
                     }
+                    PeerStatus::Available { available_pieces } => {
+                        let missing_pieces: Vec<usize> = self.transfer.pieces_status()
+                            .iter()
+                            .enumerate()
+                            .filter(| (_, status) | !(**status))
+                            .filter(| (i, _) | !self.assigned_pieces.values().any(| piece_idx | i == piece_idx))
+                            .map(| (i, _) | i)
+                            .collect()
+                        ;
+
+                        self.assigned_pieces.remove(addr);
+    
+                        let target_piece = available_pieces
+                            .iter()
+                            .enumerate()
+                            .find(| (i, status) | {
+                                if **status {
+                                    missing_pieces.contains(i)
+                                }
+                                else {
+                                    false
+                                }
+                            })
+                        ;
+    
+                        if let Some((idx, _)) = target_piece {
+                            println!("trying to assing piece {idx} to peer {addr}");
+    
+                            if let Some(tx) = self.peers_cmd_tx.get(addr) {
+                                if !tx.is_closed() && tx.send(PeerCommand::RequestPiece(idx, self.transfer.piece_length())).is_ok() {
+                                    self.assigned_pieces.insert(*addr, idx);
+                                }
+                                else {
+                                    *status = PeerStatus::Dropped { assigned_piece: None };
+                                }
+                            }
+                            else {
+                                *status = PeerStatus::Dropped { assigned_piece: None };
+                            }
+                        }
+                    }
+                    _ => {}
                 }
             }
 
@@ -247,7 +284,7 @@ impl Engine {
             println!("dropping {} peers", peers_to_remove.len());
 
             for (peer, _) in peers_to_remove {
-                    self.assigned_pieces.remove(&peer);
+                self.assigned_pieces.remove(&peer);
                 self.peers_cmd_tx.remove(&peer);
                 self.peers_status.remove(&peer);
                 self.peers_status_rx.remove(&peer);

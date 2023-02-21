@@ -24,16 +24,19 @@ const PLACEHOLDER_ID: [u8; 20] = *b"00000000000000000000";
 pub enum PeerStatus {
     /// Waiting for the peer to reply to a message or unchoke us.
     Waiting,
+    /// Connected successfully to the peer and got Bitfield, but waiting for Unchoke.
+    Connected { available_pieces: Vec<bool> },
     /// The peer was dropped. This can be caused by the peer sending bad data,
     /// or being unresponsive/choked for too long.
     Dropped { assigned_piece: Option<usize> },
-    /// Connection with Peer was established and is ready to work.
+    /// Peer unchocked us.
     Available { available_pieces: Vec<bool> },
 }
 
 #[derive(Debug)]
 pub enum PeerCommand {
     Disconnect,
+    SendInterested,
     RequestPiece(usize, u64)
 }
 
@@ -157,12 +160,9 @@ impl TcpPeer {
             if let Ok(cmd) = self.cmd_rx.try_recv() {
                 match cmd {
                     PeerCommand::Disconnect => break,
-                    PeerCommand::RequestPiece(idx, size) => {
+                    PeerCommand::SendInterested => {
                         self.client_chocking = false;
                         self.client_interested = true;
-
-                        self.piece_info = Some((idx, size));
-                        self.time_since_assign = Some(Instant::now());
 
                         if self.client_chocking && !self.send_message(Message::Unchoke).await {
                             // Error sending message, drop.
@@ -173,6 +173,10 @@ impl TcpPeer {
                             // Error sending message, drop.
                             break;
                         }
+                    }
+                    PeerCommand::RequestPiece(idx, size) => {
+                        self.piece_info = Some((idx, size));
+                        self.time_since_assign = Some(Instant::now());
                     }
                 }
             }
@@ -225,6 +229,15 @@ impl TcpPeer {
             }
 
             if let Some(msg) = self.get_message().await {
+                if self.piece_info.is_none() {
+                    if self.peer_chocking {
+                        self.update_peer_status(PeerStatus::Connected { available_pieces: self.available_pieces.clone() });
+                    }
+                    else {
+                        self.update_peer_status(PeerStatus::Available { available_pieces: self.available_pieces.clone() });
+                    }
+                }
+
                 match msg {
                     Message::KeepAlive => {}
                     Message::Choke => {
