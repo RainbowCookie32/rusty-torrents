@@ -29,7 +29,7 @@ pub enum PeerStatus {
     /// The peer was dropped. This can be caused by the peer sending bad data,
     /// or being unresponsive/choked for too long.
     Dropped { assigned_piece: Option<usize> },
-    /// Peer unchocked us.
+    /// Peer unchoked us.
     Available { available_pieces: Vec<bool> },
 }
 
@@ -50,10 +50,10 @@ pub struct TcpPeer {
     /// We are interested on the Peer, might request a Piece.
     client_interested: bool,
 
-    /// Peer is chocking us, can't send any requests.
-    peer_chocking: bool,
-    /// We are chocking the peer, ignore any requests.
-    client_chocking: bool,
+    /// Peer is choking us, can't send any requests.
+    peer_choking: bool,
+    /// We are choking the peer, ignore any requests.
+    client_choking: bool,
 
     /// Each entry on this Vec represents whether or not a piece
     /// is available on this peer. It's calculated from the Bitfield message
@@ -80,8 +80,8 @@ pub struct TcpPeer {
     /// for checking and writing.
     complete_piece_data_tx: mpsc::UnboundedSender<(usize, Vec<u8>)>,
 
-    /// The amount of time the peer had us chocked for.
-    chocked_since: Option<Instant>,
+    /// The amount of time the peer had us choked for.
+    choked_since: Option<Instant>,
     /// The amount of time we've been waiting for the peer to reply.
     waiting_since: Option<Instant>,
     /// The amount of time that passed since the Piece assigned.
@@ -110,8 +110,8 @@ impl TcpPeer {
                 peer_interested: false,
                 client_interested: false,
     
-                peer_chocking: true,
-                client_chocking: true,
+                peer_choking: true,
+                client_choking: true,
     
                 available_pieces: Vec::new(),
                 completed_pieces,
@@ -125,7 +125,7 @@ impl TcpPeer {
                 complete_piece_rx,
                 complete_piece_data_tx,
     
-                chocked_since: None,
+                choked_since: None,
                 waiting_since: None,
                 time_since_assign: None,
             }
@@ -161,10 +161,10 @@ impl TcpPeer {
                 match cmd {
                     PeerCommand::Disconnect => break,
                     PeerCommand::SendInterested => {
-                        self.client_chocking = false;
+                        self.client_choking = false;
                         self.client_interested = true;
 
-                        if self.client_chocking && !self.send_message(Message::Unchoke).await {
+                        if self.client_choking && !self.send_message(Message::Unchoke).await {
                             // Error sending message, drop.
                             break;
                         }
@@ -188,9 +188,9 @@ impl TcpPeer {
                 }
             }
 
-            if let Some(time_chocked) = self.chocked_since.as_ref() {
-                if time_chocked.elapsed() > Duration::from_secs(300) {
-                    // If we spent 5 minutes chocked, it's probably time to find another peer.
+            if let Some(time_choked) = self.choked_since.as_ref() {
+                if time_choked.elapsed() > Duration::from_secs(300) {
+                    // If we spent 5 minutes choked, it's probably time to find another peer.
                     break;
                 }
             }
@@ -230,7 +230,7 @@ impl TcpPeer {
 
             if let Some(msg) = self.get_message().await {
                 if self.piece_info.is_none() {
-                    if self.peer_chocking {
+                    if self.peer_choking {
                         self.update_peer_status(PeerStatus::Connected { available_pieces: self.available_pieces.clone() });
                     }
                     else {
@@ -241,17 +241,17 @@ impl TcpPeer {
                 match msg {
                     Message::KeepAlive => {}
                     Message::Choke => {
-                        self.peer_chocking = true;
-                        self.chocked_since = Some(Instant::now());
+                        self.peer_choking = true;
+                        self.choked_since = Some(Instant::now());
 
                         self.update_peer_status(PeerStatus::Waiting);
                     }
                     Message::Unchoke => {
                         // Some peers send a second Unchoke message after requesting a piece.
-                        // Only update status if we are actually chaging from Chocked to Unchoked.
-                        if self.peer_chocking {
-                            self.peer_chocking = false;
-                            self.chocked_since = None;
+                        // Only update status if we are actually chaging from Choked to Unchoked.
+                        if self.peer_choking {
+                            self.peer_choking = false;
+                            self.choked_since = None;
 
                             if !self.available_pieces.is_empty() {
                                 self.update_peer_status(PeerStatus::Available { available_pieces: self.available_pieces.clone() });
