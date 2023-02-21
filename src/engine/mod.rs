@@ -107,6 +107,10 @@ impl Engine {
             }
 
             for (addr, status) in self.peers_status.iter_mut() {
+                if self.assigned_pieces.contains_key(addr) {
+                    continue;
+                }
+
                 match status {
                     PeerStatus::Connected { available_pieces } => {
                         let missing_pieces: Vec<usize> = self.transfer.pieces_status()
@@ -188,6 +192,15 @@ impl Engine {
             }
 
             if let Ok((piece, data)) = self.peers_piece_data_rx.try_recv() {
+                let peer = self.assigned_pieces.iter()
+                    .find(| (_, v) | **v == piece)
+                    .map(| (k, _) | *k)
+                ;
+
+                if let Some(peer) = peer {
+                    self.assigned_pieces.remove(&peer);
+                }
+
                 if self.transfer.add_complete_piece(piece, data).await {
                     println!("piece {piece} was written to disk");
 
