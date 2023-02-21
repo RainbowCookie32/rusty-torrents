@@ -249,8 +249,30 @@ impl TcpPeer {
                             }
                         }
                     }
-                    Message::Interested => self.peer_interested = true,
-                    Message::NotInterested => self.peer_interested = false,
+                    Message::Interested => {
+                        self.peer_interested = true;
+                        
+                        if self.client_choking {
+                            self.client_choking = false;
+                            
+                            if !self.send_message(Message::Unchoke).await {
+                                self.update_peer_status(PeerStatus::Dropped);
+                                break;
+                            }
+                        }
+                    }
+                    Message::NotInterested => {
+                        self.peer_interested = false;
+
+                        if !self.client_choking {
+                            self.client_choking = true;
+
+                            if !self.send_message(Message::Choke).await {
+                                self.update_peer_status(PeerStatus::Dropped);
+                                break;
+                            }
+                        }
+                    }
                     Message::Have { piece } => {
                         let piece = piece as usize;
 
