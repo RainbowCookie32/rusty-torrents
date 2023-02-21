@@ -148,28 +148,8 @@ impl TcpPeer {
         self.update_peer_status(PeerStatus::Waiting);
 
         loop {
-            if let Ok(cmd) = self.cmd_rx.try_recv() {
-                match cmd {
-                    PeerCommand::Disconnect => break,
-                    PeerCommand::SendInterested => {
-                        self.client_choking = false;
-                        self.client_interested = true;
-
-                        if self.client_choking && !self.send_message(Message::Unchoke).await {
-                            // Error sending message, drop.
-                            break;
-                        }
-
-                        if !self.client_interested && !self.send_message(Message::Interested).await {
-                            // Error sending message, drop.
-                            break;
-                        }
-                    }
-                    PeerCommand::RequestPiece(idx, size) => {
-                        self.piece_info = Some((idx, size));
-                        self.time_since_assign = Some(Instant::now());
-                    }
-                }
+            if self.handle_engine_cmd().await {
+                break;
             }
 
             if let Ok(piece) = self.complete_piece_rx.try_recv() {
@@ -292,7 +272,7 @@ impl TcpPeer {
                                 self.piece_data.append(&mut block_data);
 
                                 if self.piece_data.len() == *size as usize {
-                                    self.complete_piece_data_tx.send((*requested, self.piece_data.clone()))
+                                    self.complete_piece_data_tx.send((*requested, self.piece_data))
                                         .expect("Failed to send Piece data to Engine")
                                     ;
 
@@ -337,6 +317,36 @@ impl TcpPeer {
 
             self.send_message(message).await;
         }
+    }
+
+    /// Handles commands sent by the engine, returns true if it should drop the peer.
+    async fn handle_engine_cmd(&mut self) -> bool {
+        if let Ok(cmd) = self.cmd_rx.try_recv() {
+            match cmd {
+                PeerCommand::Disconnect => return true,
+                PeerCommand::SendInterested => {
+                    self.client_choking = false;
+                    self.client_interested = true;
+
+                    if self.client_choking && !self.send_message(Message::Unchoke).await {
+                        // Error sending message, drop.
+                        return true;
+                    }
+
+                    if !self.client_interested && !self.send_message(Message::Interested).await {
+                        // Error sending message, drop.
+                        return true;
+                    }
+                }
+                PeerCommand::RequestPiece(idx, size) => {
+                    self.piece_info = Some((idx, size));
+                    self.piece_data = Vec::with_capacity(size as usize);
+                    self.time_since_assign = Some(Instant::now());
+                }
+            }
+        }
+
+        false
     }
 
     /// Try to get a message from the TcpStream if available.
