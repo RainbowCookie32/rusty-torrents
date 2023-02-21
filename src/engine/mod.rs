@@ -108,7 +108,7 @@ impl Engine {
                 }
                 else {
                     // has_changed returns an error if the channel is closed, which means a dropped peer.
-                    self.peers_status.insert(*addr, PeerStatus::Dropped { assigned_piece: None });
+                    self.peers_status.insert(*addr, PeerStatus::Dropped);
                 }
             }
 
@@ -144,11 +144,11 @@ impl Engine {
                         if is_relevant {
                             if let Some(tx) = self.peers_cmd_tx.get(addr) {
                                 if tx.is_closed() || tx.send(PeerCommand::SendInterested).is_err() {
-                                    *status = PeerStatus::Dropped { assigned_piece: None };
+                                    *status = PeerStatus::Dropped;
                                 }
                             }
                             else {
-                                *status = PeerStatus::Dropped { assigned_piece: None };
+                                *status = PeerStatus::Dropped;
                             }
                         }
                     }
@@ -184,11 +184,11 @@ impl Engine {
                                     println!("assigned piece {idx} to peer {addr}");
                                 }
                                 else {
-                                    *status = PeerStatus::Dropped { assigned_piece: None };
+                                    *status = PeerStatus::Dropped;
                                 }
                             }
                             else {
-                                *status = PeerStatus::Dropped { assigned_piece: None };
+                                *status = PeerStatus::Dropped;
                             }
                         }
                     }
@@ -321,7 +321,7 @@ impl Engine {
     fn clear_peers_list(&mut self) {
         let peers_to_remove: Vec<(SocketAddrV4, PeerStatus)> = self.peers_status
             .iter()
-            .filter(| (_, v) | matches!(*v, PeerStatus::Dropped { assigned_piece: _ }))
+            .filter(| (_, v) | matches!(*v, PeerStatus::Dropped))
             .map(| (k, v) | (*k, v.clone()))
             .collect()
         ;

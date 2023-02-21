@@ -24,11 +24,11 @@ const PLACEHOLDER_ID: [u8; 20] = *b"00000000000000000000";
 pub enum PeerStatus {
     /// Waiting for the peer to reply to a message or unchoke us.
     Waiting,
-    /// Connected successfully to the peer and got Bitfield, but waiting for Unchoke.
-    Connected { available_pieces: Vec<bool> },
     /// The peer was dropped. This can be caused by the peer sending bad data,
     /// or being unresponsive/choked for too long.
-    Dropped { assigned_piece: Option<usize> },
+    Dropped,
+    /// Connected successfully to the peer and got Bitfield, but waiting for Unchoke.
+    Connected { available_pieces: Vec<bool> },
     /// Peer unchoked us.
     Available { available_pieces: Vec<bool> },
 }
@@ -132,25 +132,16 @@ impl TcpPeer {
         )
     }
 
-    fn get_assigned_piece(&self) -> Option<usize> {
-        if let Some((piece, _)) = self.piece_info.as_ref() {
-            Some(*piece)
-        }
-        else {
-            None
-        }
-    }
-
     /// Starts communication with the peer. Sends the handshake
     /// and receives/sends messages about the active torrent.
     pub async fn connect_to_peer(mut self) {
         if !self.send_handshake().await {
-            self.update_peer_status(PeerStatus::Dropped { assigned_piece: self.get_assigned_piece() });
+            self.update_peer_status(PeerStatus::Dropped);
             return;
         }
 
         if !self.send_message(Message::Bitfield { bitfield: Bitfield::from_pieces(self.completed_pieces.clone()) }).await {
-            self.update_peer_status(PeerStatus::Dropped { assigned_piece: self.get_assigned_piece() });
+            self.update_peer_status(PeerStatus::Dropped);
             return;
         }
 
@@ -309,7 +300,7 @@ impl TcpPeer {
             time::sleep(Duration::from_millis(5)).await;
         }
 
-        self.update_peer_status(PeerStatus::Dropped { assigned_piece: self.get_assigned_piece() });
+        self.update_peer_status(PeerStatus::Dropped);
 
         if let Some((piece, size)) = self.piece_info {
             let piece_idx = piece as u32;
