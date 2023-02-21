@@ -117,17 +117,18 @@ impl Engine {
                     continue;
                 }
 
+                // TODO: Get this out of the loop.
+                let missing_pieces: Vec<usize> = self.transfer.pieces_status()
+                    .iter()
+                    .enumerate()
+                    .filter(| (_, status) | !(**status))
+                    .filter(| (i, _) | !self.assigned_pieces.values().any(| piece_idx | i == piece_idx))
+                    .map(| (i, _) | i)
+                    .collect()
+                ;
+
                 match status {
                     PeerStatus::Connected { available_pieces } => {
-                        let missing_pieces: Vec<usize> = self.transfer.pieces_status()
-                            .iter()
-                            .enumerate()
-                            .filter(| (_, status) | !(**status))
-                            .filter(| (i, _) | !self.assigned_pieces.values().any(| piece_idx | i == piece_idx))
-                            .map(| (i, _) | i)
-                            .collect()
-                        ;
-
                         let is_relevant = available_pieces
                             .iter()
                             .enumerate()
@@ -153,15 +154,6 @@ impl Engine {
                         }
                     }
                     PeerStatus::Available { available_pieces } => {
-                        let missing_pieces: Vec<usize> = self.transfer.pieces_status()
-                            .iter()
-                            .enumerate()
-                            .filter(| (_, status) | !(**status))
-                            .filter(| (i, _) | !self.assigned_pieces.values().any(| piece_idx | i == piece_idx))
-                            .map(| (i, _) | i)
-                            .collect()
-                        ;
-
                         self.assigned_pieces.remove(addr);
     
                         let target_piece = available_pieces
