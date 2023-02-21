@@ -101,8 +101,14 @@ impl Engine {
             }
 
             for (addr, rx) in self.peers_status_rx.iter_mut() {
-                if rx.has_changed().unwrap_or_default() {
-                    self.peers_status.insert(*addr, rx.borrow_and_update().clone());
+                if let Ok(changed) = rx.has_changed() {
+                    if changed {
+                        self.peers_status.insert(*addr, rx.borrow_and_update().clone());
+                    }
+                }
+                else {
+                    // has_changed returns an error if the channel is closed, which means a dropped peer.
+                    self.peers_status.insert(*addr, PeerStatus::Dropped { assigned_piece: None });
                 }
             }
 
@@ -122,12 +128,12 @@ impl Engine {
                             .collect()
                         ;
 
-                        let target_piece = available_pieces
+                        let is_relevant = available_pieces
                             .iter()
                             .enumerate()
-                            .find(| (i, status) | {
-                                if **status {
-                                    missing_pieces.contains(i)
+                            .any(| (i, status) | {
+                                if *status {
+                                    missing_pieces.contains(&i)
                                 }
                                 else {
                                     false
@@ -135,7 +141,7 @@ impl Engine {
                             })
                         ;
 
-                        if target_piece.is_some() {
+                        if is_relevant {
                             if let Some(tx) = self.peers_cmd_tx.get(addr) {
                                 if tx.is_closed() || tx.send(PeerCommand::SendInterested).is_err() {
                                     *status = PeerStatus::Dropped { assigned_piece: None };
@@ -172,11 +178,10 @@ impl Engine {
                         ;
     
                         if let Some((idx, _)) = target_piece {
-                            println!("trying to assing piece {idx} to peer {addr}");
-    
                             if let Some(tx) = self.peers_cmd_tx.get(addr) {
                                 if !tx.is_closed() && tx.send(PeerCommand::RequestPiece(idx, self.transfer.piece_length())).is_ok() {
                                     self.assigned_pieces.insert(*addr, idx);
+                                    println!("assigned piece {idx} to peer {addr}");
                                 }
                                 else {
                                     *status = PeerStatus::Dropped { assigned_piece: None };
@@ -225,7 +230,9 @@ impl Engine {
                 // self.send_message_to_trackers(TrackerEvent::Completed, true).await;
             }
             
+            self.validate_assigned_pieces();
             self.clear_peers_list();
+
             tokio::time::sleep(std::time::Duration::from_millis(50)).await;
         }
     }
@@ -282,6 +289,32 @@ impl Engine {
                     peer.connect_to_peer().await;
                 }
             });
+        }
+    }
+
+    /// Goes through assigned_pieces and checks the Peer is still alive.
+    /// Releases the piece otherwise.
+    fn validate_assigned_pieces(&mut self) {
+        let mut assignments_to_remove = Vec::new();
+
+        for k in self.assigned_pieces.keys() {
+            let mut release_piece = true;
+
+            if let Some(peer_tx) = self.peers_cmd_tx.get(k) {
+                release_piece = peer_tx.is_closed();
+            }
+
+            if release_piece {
+                assignments_to_remove.push(*k);
+            }
+        }
+
+        if !assignments_to_remove.is_empty() {
+            println!("found {} orphan assignments", assignments_to_remove.len());
+
+            for peer in assignments_to_remove.iter() {
+                self.assigned_pieces.remove(peer);
+            }
         }
     }
 
