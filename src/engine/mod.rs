@@ -179,7 +179,7 @@ impl Engine {
     
                         if let Some((idx, _)) = target_piece {
                             if let Some(tx) = self.peers_cmd_tx.get(addr) {
-                                if !tx.is_closed() && tx.send(PeerCommand::RequestPiece(idx, self.transfer.piece_length())).is_ok() {
+                                if !tx.is_closed() && tx.send(PeerCommand::RequestPiece(idx, self.transfer.piece_length(idx))).is_ok() {
                                     self.assigned_pieces.insert(*addr, idx);
                                     println!("assigned piece {idx} to peer {addr}");
                                 }

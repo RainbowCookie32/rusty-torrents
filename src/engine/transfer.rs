@@ -23,6 +23,8 @@ pub struct Transfer {
     
     /// Length of each piece. Final piece might be smaller.
     piece_length: u64,
+    /// The size of each individual piece.
+    pieces_sizes: Vec<usize>,
     /// Whether a piece is complete or not.
     pieces_status: Vec<bool>,
     /// The file and position where each piece starts.
@@ -69,6 +71,7 @@ impl Transfer {
             torrent_data,
 
             piece_length,
+            pieces_sizes: Vec::with_capacity(piece_count),
             pieces_status: vec![false; piece_count],
             pieces_offsets,
             
@@ -85,8 +88,8 @@ impl Transfer {
         self.info_hash.clone()
     }
 
-    pub fn piece_length(&self) -> u64 {
-        self.piece_length
+    pub fn piece_length(&self, piece_idx: usize) -> u64 {
+        self.pieces_sizes[piece_idx] as u64
     }
 
     pub fn pieces_status(&self) -> &Vec<bool> {
@@ -146,6 +149,8 @@ impl Transfer {
 
         self.sha1.reset();
         self.sha1.update(&piece_data);
+
+        self.pieces_sizes.push(piece_data.len());
 
         if self.sha1.digest().bytes() == piece_hash.as_slice() {
             self.left -= piece_data.len() as u64;
