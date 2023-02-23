@@ -1,6 +1,7 @@
 use std::sync::Arc;
 use std::path::Path;
 use std::io::SeekFrom;
+use std::net::SocketAddrV4;
 
 use sha1::Sha1;
 
@@ -20,15 +21,11 @@ pub struct Transfer {
     info_hash: Arc<[u8; 20]>,
     /// The parsed .torrent file.
     torrent_data: ParsedTorrent,
-    
+
+    /// Info about all the pieces on this torrent.
+    pieces: Vec<TransferPiece>,
     /// Length of each piece. Final piece might be smaller.
     piece_length: u64,
-    /// The size of each individual piece.
-    pieces_sizes: Vec<usize>,
-    /// Whether a piece is complete or not.
-    pieces_status: Vec<bool>,
-    /// The file and position where each piece starts.
-    pieces_offsets: Vec<(usize, usize)>,
 
     /// Handles for each file of the torrent.
     files: Vec<File>,
@@ -56,7 +53,7 @@ impl Transfer {
             files.push(Transfer::create_file(&file_path, *size).await);
         }
 
-        let pieces_offsets = Transfer::calculate_pieces_offsets(&files, piece_count, piece_length).await;
+        let pieces = Transfer::calculate_pieces_info(&files, piece_count, piece_length).await;
 
         let total_size = torrent_data.get_files()
             .iter()
@@ -70,10 +67,8 @@ impl Transfer {
             info_hash,
             torrent_data,
 
+            pieces,
             piece_length,
-            pieces_sizes: Vec::with_capacity(piece_count),
-            pieces_status: vec![false; piece_count],
-            pieces_offsets,
             
             files,
 
@@ -88,18 +83,31 @@ impl Transfer {
         self.info_hash.clone()
     }
 
-    pub fn piece_length(&self, piece_idx: usize) -> u64 {
-        self.pieces_sizes[piece_idx] as u64
+    pub fn pieces_status(&self) -> Vec<bool> {
+        self.pieces
+            .iter()
+            .map(| piece | piece.completed)
+            .collect()
     }
 
-    pub fn pieces_status(&self) -> &Vec<bool> {
-        &self.pieces_status
+    pub fn get_piece_for_peer(&mut self, available_pieces: &Vec<bool>) -> Option<&mut TransferPiece> {
+        if available_pieces.is_empty() {
+            return None;
+        }
+        
+        self.pieces.iter_mut()
+            .filter(| piece | !piece.completed && piece.assigned_to.is_none())
+            .find(| piece | available_pieces[piece.idx])
+    }
+
+    pub fn unassign_piece(&mut self, piece: usize) {
+        self.pieces[piece].assigned_to = None;
     }
 
     pub fn is_complete(&self) -> bool {
-        self.pieces_status
+        self.pieces
             .iter()
-            .filter(| piece | !(**piece))
+            .filter(| piece | !piece.completed)
             .count() == 0
     }
 
@@ -129,20 +137,16 @@ impl Transfer {
     }
 
     pub async fn check_torrent(&mut self) {
-        let piece_count = self.pieces_status.len();
-        let mut new_status = vec![false; piece_count];
-
+        let piece_count = self.pieces.len();
         self.left = self.total_size;
 
         for piece in 0..piece_count {
-            new_status[piece] = self.check_piece(piece).await;
+            self.pieces[piece].completed = self.check_piece(piece).await;
         }
-
-        self.pieces_status = new_status;
     }
 
     async fn check_piece(&mut self, piece: usize) -> bool {
-        assert!(piece < self.pieces_status.len());
+        assert!(piece < self.pieces.len());
 
         let piece_data = self.read_piece(piece).await;
         let piece_hash = &self.torrent_data.info().pieces()[piece];
@@ -150,7 +154,7 @@ impl Transfer {
         self.sha1.reset();
         self.sha1.update(&piece_data);
 
-        self.pieces_sizes.push(piece_data.len());
+        self.pieces[piece].length = piece_data.len();
 
         if self.sha1.digest().bytes() == piece_hash.as_slice() {
             self.left -= piece_data.len() as u64;
@@ -162,7 +166,7 @@ impl Transfer {
     }
 
     pub async fn add_complete_piece(&mut self, piece: usize, data: Vec<u8>) -> bool {
-        assert!(piece < self.pieces_status.len());
+        assert!(piece < self.pieces.len());
 
         let piece_hash = &self.torrent_data.info().pieces()[piece];
 
@@ -171,7 +175,7 @@ impl Transfer {
 
         if self.sha1.digest().bytes() == piece_hash.as_slice() {
             self.left -= data.len() as u64;
-            self.pieces_status[piece] = true;
+            self.pieces[piece].completed = true;
             
             self.write_piece(piece, data).await;
             true
@@ -182,11 +186,13 @@ impl Transfer {
     }
 
     async fn read_piece(&mut self, piece: usize) -> Vec<u8> {
-        assert!(piece < self.pieces_status.len());
+        assert!(piece < self.pieces.len());
 
         let piece_length = self.piece_length as usize;
-        let (piece_file_idx, piece_offset) = self.pieces_offsets[piece];
-        let mut piece_file = &mut self.files[piece_file_idx];
+        let piece_file_i = self.pieces[piece].start_file;
+        let piece_offset = self.pieces[piece].start_position;
+
+        let mut piece_file = &mut self.files[piece_file_i];
 
         let file_size = piece_file.metadata().await.unwrap().len();
         let buf_size = {
@@ -209,12 +215,12 @@ impl Transfer {
         ;
 
         if let Ok(read_bytes) = piece_file.read_exact(&mut piece_buf).await {
-            if read_bytes != piece_length && piece != (self.pieces_status.len() - 1) {
+            if read_bytes != piece_length && piece != (self.pieces.len() - 1) {
                 let missing_bytes = piece_length - read_bytes;
                 let mut remaining_buf = vec![0; missing_bytes];
 
                 piece_buf.resize(read_bytes, 0);
-                piece_file = &mut self.files[piece_file_idx + 1];
+                piece_file = &mut self.files[piece_file_i as usize + 1];
 
                 piece_file
                     .seek(SeekFrom::Start(0))
@@ -237,28 +243,29 @@ impl Transfer {
     }
 
     async fn write_piece(&mut self, piece: usize, data: Vec<u8>) {
-        assert!(piece < self.pieces_status.len());
+        assert!(piece < self.pieces.len());
 
-        let (piece_file_idx, piece_offset) = &self.pieces_offsets[piece];
-        let mut piece_file = &mut self.files[*piece_file_idx];
+        let piece_file_i = self.pieces[piece].start_file as usize;
+        let piece_offset = self.pieces[piece].start_position as usize;
+        let mut piece_file = &mut self.files[piece_file_i];
 
         let file_size = piece_file.metadata().await.unwrap().len();
-        let split_piece = *piece_offset + data.len() > file_size as usize;
+        let split_piece = piece_offset as usize + data.len() > file_size as usize;
 
         piece_file
-            .seek(SeekFrom::Start(*piece_offset as u64))
+            .seek(SeekFrom::Start(piece_offset as u64))
             .await
             .expect("file seek failed")
         ;
 
         if split_piece {
-            let bytes_to_write = file_size as usize - *piece_offset;
+            let bytes_to_write = file_size as usize - piece_offset;
             let first_batch = &data[0..bytes_to_write];
             let second_batch = &data[bytes_to_write..];
 
             piece_file.write_all(first_batch).await.expect("failed to write piece");
 
-            piece_file = &mut self.files[*piece_file_idx + 1];
+            piece_file = &mut self.files[piece_file_i + 1];
             piece_file.write_all(second_batch).await.expect("failed to write piece");
         }
         else {
@@ -297,8 +304,8 @@ impl Transfer {
         file
     }
 
-    async fn calculate_pieces_offsets(files: &[File], piece_count: usize, piece_length: u64) -> Vec<(usize, usize)> {
-        let mut pieces_offsets = Vec::with_capacity(piece_count);
+    async fn calculate_pieces_info(files: &[File], piece_count: usize, piece_length: u64) -> Vec<TransferPiece> {
+        let mut pieces_info = Vec::with_capacity(piece_count);
 
         let mut file_idx = 0;
         let mut file_position = 0;
@@ -306,8 +313,23 @@ impl Transfer {
         let mut file_metadata = files[0].metadata().await.unwrap();
 
         for i in 0..piece_count {
+            let start_file = file_idx;
+            let start_position = file_position;
+
+            let piece_info = TransferPiece {
+                idx: i,
+                length: piece_length as usize,
+                completed: false,
+
+                start_file,
+                start_position,
+
+                assigned_to: None
+            };
+
+            pieces_info.push(piece_info);
+
             let is_last_piece = i == piece_count - 1;
-            pieces_offsets.push((file_idx, file_position));
 
             file_position += piece_length as usize;
 
@@ -319,7 +341,36 @@ impl Transfer {
             }
         }
 
-        pieces_offsets
+        pieces_info
+    }
+}
+
+pub struct TransferPiece {
+    idx: usize,
+    length: usize,
+    completed: bool,
+
+    start_file: usize,
+    start_position: usize,
+
+    assigned_to: Option<SocketAddrV4>,
+}
+
+impl TransferPiece {
+    pub fn idx(&self) -> usize {
+        self.idx
+    }
+
+    pub fn length(&self) -> usize {
+        self.length
+    }
+
+    pub fn is_assigned(&self) -> bool {
+        self.assigned_to.is_some()
+    }
+
+    pub fn set_assigned(&mut self, address: SocketAddrV4) {
+        self.assigned_to = Some(address);
     }
 }
 
@@ -331,13 +382,3 @@ pub struct TransferProgress {
     pub downloaded: u64
 }
 
-impl TransferProgress {
-    pub fn new(left: u64, total: u64, uploaded: u64, downloaded: u64) -> TransferProgress {
-        TransferProgress {
-            left,
-            total,
-            uploaded,
-            downloaded
-        }
-    }
-}
