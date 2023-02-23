@@ -114,6 +114,7 @@ struct Tracker {
     kind: TrackerKind,
 
     peer_id: String,
+    complete_announced: bool,
 
     error_count: u32,
     reannounce_rate: Option<Duration>,
@@ -137,6 +138,7 @@ impl Tracker {
             kind,
 
             peer_id,
+            complete_announced: false,
 
             error_count: 0,
             reannounce_rate: None,
@@ -146,7 +148,17 @@ impl Tracker {
 
     pub async fn announce_tcp(&mut self, client: &Client, hash: &[u8; 20], progress: &TransferProgress, reannounce: bool) -> Option<Vec<SocketAddrV4>> {
         let hash = urlencoding::encode_binary(hash);
-        let event = if reannounce { "started" } else {""};
+        let event = {
+            if progress.left == 0 && !self.complete_announced {
+                "completed"
+            }
+            else if reannounce {
+                "started"
+            }
+            else {
+                ""
+            }
+        };
 
         let query_url = format!(
             "{}?info_hash={}&peer_id={}&port=6881&uploaded={}&downloaded={}&left={}&compact=1&numwant=100&event={}",
@@ -181,6 +193,10 @@ impl Tracker {
             self.reannounce_rate = Some(Duration::from_secs(interval.get_int().min(120)));
         }
 
+        if event == "completed" {
+            self.complete_announced = true;
+        }
+        
         self.last_announce_time = Some(Instant::now());
 
         Some(peers_list)
