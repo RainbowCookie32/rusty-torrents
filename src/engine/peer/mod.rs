@@ -31,13 +31,17 @@ pub enum PeerStatus {
     Connected { available_pieces: Vec<bool> },
     /// Peer unchoked us.
     Available { available_pieces: Vec<bool> },
+    /// Peer requested a Piece.
+    RequestedPiece { piece: usize }
 }
 
 #[derive(Debug)]
 pub enum PeerCommand {
     Disconnect,
     SendInterested,
-    RequestPiece(usize, u64)
+
+    SendPiece { piece: usize, data: Vec<u8> },
+    RequestPiece { piece: usize, length: u64 }
 }
 
 pub struct TcpPeer {
@@ -63,9 +67,16 @@ pub struct TcpPeer {
     completed_pieces: Vec<bool>,
 
     /// Holds the Piece data received from the Peer.
-    piece_data: Vec<u8>,
+    sent_piece_data: Vec<u8>,
     /// The index and length of the requested Piece.
-    piece_info: Option<(usize, u64)>,
+    sent_piece_info: Option<(usize, u64)>,
+
+    /// Holds the Piece data that was requested by the peer.
+    requested_piece_data: Vec<u8>,
+    /// Index, block offset and length of the requested Piece.
+    requested_piece_info: Option<(usize, u32, u32)>,
+    /// Whether we still have to send a block of data.
+    requested_piece_pending: bool,
 
     /// Gets commands from the Engine, like Piece requests,
     /// or disconnects.
@@ -116,8 +127,12 @@ impl TcpPeer {
                 available_pieces: Vec::new(),
                 completed_pieces,
 
-                piece_data: Vec::new(),
-                piece_info: None,
+                sent_piece_data: Vec::new(),
+                sent_piece_info: None,
+
+                requested_piece_data: Vec::new(),
+                requested_piece_info: None,
+                requested_piece_pending: false,
     
                 cmd_rx,
                 peer_status_tx,
@@ -172,10 +187,10 @@ impl TcpPeer {
                     break;
                 }
             }
-            else if let Some((idx, size)) = self.piece_info.as_ref() {
+            else if let Some((idx, size)) = self.sent_piece_info.as_ref() {
                 let piece_idx = *idx as u32;
-                let block_offset = self.piece_data.len() as u32;
-                let block_length = (*size - self.piece_data.len() as u64).min(16384) as u32;
+                let block_offset = self.sent_piece_data.len() as u32;
+                let block_length = (*size - self.sent_piece_data.len() as u64).min(16384) as u32;
 
                 let message = Message::Request { piece_idx, block_offset, block_length };
 
@@ -199,8 +214,32 @@ impl TcpPeer {
                 }
             }
 
+            if self.requested_piece_pending && !self.requested_piece_data.is_empty() {
+                if let Some((piece, offset, length)) = self.requested_piece_info.as_ref() {
+                    let block_start = *offset as usize;
+                    let block_end = block_start + *length as usize;
+                    let block_data = self.requested_piece_data[block_start..block_end].to_vec();
+
+                    assert!(block_data.len() == *length as usize);
+                    println!("sending piece data to {} (idx: {piece}, offset: {offset}, length: {length})", self.stream.peer_addr().unwrap());
+
+                    let message = Message::Piece {
+                        piece_idx: *piece as u32,
+                        block_offset: *offset,
+                        block_data
+                    };
+
+                    if !self.send_message(message).await {
+                        break;
+                    }
+                    else {
+                        self.requested_piece_pending = false;
+                    }
+                }
+            }
+
             if let Some(msg) = self.get_message().await {
-                if self.piece_info.is_none() {
+                if self.sent_piece_info.is_none() {
                     if self.peer_choking {
                         self.update_peer_status(PeerStatus::Connected { available_pieces: self.available_pieces.clone() });
                     }
@@ -265,19 +304,39 @@ impl TcpPeer {
                     Message::Bitfield { bitfield } => {
                         self.available_pieces = bitfield.pieces;
                     }
-                    Message::Request { .. } => todo!(),
-                    Message::Piece { piece_idx, mut block_data, .. } => {
-                        if let Some((requested, size)) = self.piece_info.as_ref() {
-                            if piece_idx as usize == *requested {
-                                self.piece_data.append(&mut block_data);
+                    Message::Request { piece_idx, block_offset, block_length } => {
+                        let piece_idx = piece_idx as usize;
 
-                                if self.piece_data.len() == *size as usize {
-                                    self.complete_piece_data_tx.send((*requested, self.piece_data))
+                        if let Some((idx, offset, length)) = self.requested_piece_info.as_mut() {
+                            *offset = block_offset;
+                            *length = block_length;
+
+                            if *idx != piece_idx {
+                                *idx = piece_idx;
+                                
+                                self.requested_piece_data = Vec::new();
+                                self.update_peer_status(PeerStatus::RequestedPiece { piece: piece_idx });
+                            }
+                        }
+                        else {
+                            self.requested_piece_info = Some((piece_idx, block_offset, block_length));
+                            self.update_peer_status(PeerStatus::RequestedPiece { piece: piece_idx });
+                        }
+
+                        self.requested_piece_pending = true;
+                    }
+                    Message::Piece { piece_idx, mut block_data, .. } => {
+                        if let Some((requested, size)) = self.sent_piece_info.as_ref() {
+                            if piece_idx as usize == *requested {
+                                self.sent_piece_data.append(&mut block_data);
+
+                                if self.sent_piece_data.len() == *size as usize {
+                                    self.complete_piece_data_tx.send((*requested, self.sent_piece_data))
                                         .expect("Failed to send Piece data to Engine")
                                     ;
 
-                                    self.piece_info = None;
-                                    self.piece_data = Vec::new();
+                                    self.sent_piece_info = None;
+                                    self.sent_piece_data = Vec::new();
                                     self.time_since_assign = None;
 
                                     self.update_peer_status(PeerStatus::Available { available_pieces: self.available_pieces.clone() });
@@ -295,7 +354,10 @@ impl TcpPeer {
 
                         self.waiting_since = None;
                     }
-                    Message::Cancel { .. } => todo!(),
+                    Message::Cancel { .. } => {
+                        self.requested_piece_data = Vec::new();
+                        self.requested_piece_info = None;
+                    }
                 }
             }
 
@@ -304,10 +366,10 @@ impl TcpPeer {
 
         self.update_peer_status(PeerStatus::Dropped);
 
-        if let Some((piece, size)) = self.piece_info {
+        if let Some((piece, size)) = self.sent_piece_info {
             let piece_idx = piece as u32;
-            let block_offset = self.piece_data.len() as u32;
-            let block_length = (size - self.piece_data.len() as u64).min(16384) as u32;
+            let block_offset = self.sent_piece_data.len() as u32;
+            let block_length = (size - self.sent_piece_data.len() as u64).min(16384) as u32;
 
             let message = Message::Cancel {
                 piece_idx,
@@ -338,9 +400,17 @@ impl TcpPeer {
                         return true;
                     }
                 }
-                PeerCommand::RequestPiece(idx, size) => {
-                    self.piece_info = Some((idx, size));
-                    self.piece_data = Vec::with_capacity(size as usize);
+                PeerCommand::SendPiece { piece, data } => {
+                    if let Some((idx, _, _)) = self.requested_piece_info.as_ref() {
+                        if *idx == piece {
+                            self.requested_piece_data = data;
+                            self.update_peer_status(PeerStatus::Waiting);
+                        }
+                    }
+                }
+                PeerCommand::RequestPiece{ piece, length } => {
+                    self.sent_piece_info = Some((piece, length));
+                    self.sent_piece_data = Vec::with_capacity(length as usize);
                     self.time_since_assign = Some(Instant::now());
                 }
             }
@@ -435,7 +505,7 @@ impl TcpPeer {
         // Only send Available messages when we don't have a Piece already assigned.
         // This causes Engine to assign another and have the old Piece get stuck in limbo.
         if let PeerStatus::Available { .. } = &status {
-            if self.piece_info.is_none() {
+            if self.sent_piece_info.is_none() {
                 self.peer_status_tx.send(status)
                     .expect("Failed to communicate with Engine");
             }

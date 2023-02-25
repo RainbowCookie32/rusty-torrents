@@ -185,7 +185,7 @@ impl Transfer {
         }
     }
 
-    async fn read_piece(&mut self, piece: usize) -> Vec<u8> {
+    pub async fn read_piece(&mut self, piece: usize) -> Vec<u8> {
         assert!(piece < self.pieces.len());
 
         let piece_length = self.piece_length as usize;
@@ -363,10 +363,6 @@ impl TransferPiece {
 
     pub fn length(&self) -> usize {
         self.length
-    }
-
-    pub fn is_assigned(&self) -> bool {
-        self.assigned_to.is_some()
     }
 
     pub fn set_assigned(&mut self, address: SocketAddrV4) {

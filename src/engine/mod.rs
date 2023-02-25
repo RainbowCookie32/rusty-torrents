@@ -137,22 +137,31 @@ impl Engine {
 
                         let target_piece = self.transfer.get_piece_for_peer(available_pieces);
     
-                        if let Some(piece) = target_piece {
-                            let piece_idx = piece.idx();
-                            let piece_length = piece.length() as u64;
+                        if let Some(piece_info) = target_piece {
+                            let piece = piece_info.idx();
+                            let length = piece_info.length() as u64;
                             
                             if let Some(tx) = self.peers_cmd_tx.get(addr) {
-                                if !tx.is_closed() && tx.send(PeerCommand::RequestPiece(piece_idx, piece_length)).is_ok() {
-                                    println!("assigned piece {} to peer {addr}", piece_idx);
+                                if !tx.is_closed() && tx.send(PeerCommand::RequestPiece{piece, length}).is_ok() {
+                                    println!("assigned piece {} to peer {addr}", piece);
                                     
-                                    piece.set_assigned(*addr);
-                                    self.assigned_pieces.insert(*addr, piece_idx);
+                                    piece_info.set_assigned(*addr);
+                                    self.assigned_pieces.insert(*addr, piece);
                                 }
                                 else {
                                     *status = PeerStatus::Dropped;
                                 }
                             }
                             else {
+                                *status = PeerStatus::Dropped;
+                            }
+                        }
+                    }
+                    PeerStatus::RequestedPiece { piece } => {
+                        let data = self.transfer.read_piece(*piece).await;
+
+                        if let Some(tx) = self.peers_cmd_tx.get(addr) {
+                            if tx.is_closed() || tx.send(PeerCommand::SendPiece { piece: *piece, data }).is_err() {
                                 *status = PeerStatus::Dropped;
                             }
                         }
