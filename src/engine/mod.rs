@@ -18,25 +18,18 @@ use crate::bencode::ParsedTorrent;
 pub struct Engine {
     transfer: Transfer,
 
-    /// A map of peers and their assigned pieces.
-    assigned_pieces: HashMap<SocketAddrV4, Vec<usize>>,
-
     stop_rx: oneshot::Receiver<()>,
     // FIXME: This is lazyness. I could create the channel later and have
     // peers_tx be an Option, but lazyness.
     peers_tx: mpsc::Sender<Vec<SocketAddrV4>>,
     peers_rx: mpsc::Receiver<Vec<SocketAddrV4>>,
+    peers_controls: HashMap<SocketAddrV4, PeerControl>,
     
     complete_piece_tx: broadcast::Sender<usize>,
     transfer_progress_tx: broadcast::Sender<TransferProgress>,
 
     peers_piece_data_tx: mpsc::UnboundedSender<(usize, Vec<u8>)>,
     peers_piece_data_rx: mpsc::UnboundedReceiver<(usize, Vec<u8>)>,
-
-    peers_status: HashMap<SocketAddrV4, PeerStatus>,
-    peers_status_rx: HashMap<SocketAddrV4, watch::Receiver<PeerStatus>>,
-
-    peers_cmd_tx: HashMap<SocketAddrV4, mpsc::UnboundedSender<PeerCommand>>,
 }
 
 impl Engine {
@@ -55,22 +48,16 @@ impl Engine {
         Engine {
             transfer,
 
-            assigned_pieces: HashMap::new(),
-
             stop_rx,
             peers_tx,
             peers_rx,
+            peers_controls: HashMap::new(),
 
             complete_piece_tx,
             transfer_progress_tx,
 
             peers_piece_data_tx,
             peers_piece_data_rx,
-
-            peers_status: HashMap::new(),
-            peers_status_rx: HashMap::new(),
-
-            peers_cmd_tx: HashMap::new()
         }
     }
 
@@ -86,10 +73,8 @@ impl Engine {
 
         loop {
             if self.stop_rx.try_recv().is_ok() {
-                for cmd_tx in self.peers_cmd_tx.values() {
-                    if cmd_tx.send(PeerCommand::Disconnect).is_err() {
-                        println!("failed to send disconnect command to peer");
-                    }
+                for (_, control) in self.peers_controls.iter_mut() {
+                    control.send_cmd(PeerCommand::Disconnect);
                 }
 
                 // TODO: Send stopped event to Trackers.
@@ -100,43 +85,18 @@ impl Engine {
                 self.add_peers(list).await;
             }
 
-            for (addr, rx) in self.peers_status_rx.iter_mut() {
-                if let Ok(changed) = rx.has_changed() {
-                    if changed {
-                        self.peers_status.insert(*addr, rx.borrow_and_update().clone());
-                    }
-                }
-                else {
-                    // has_changed returns an error if the channel is closed, which means a dropped peer.
-                    self.peers_status.insert(*addr, PeerStatus::Dropped);
-                }
-            }
-
-            for (addr, status) in self.peers_status.iter_mut() {
-                if self.assigned_pieces.contains_key(addr) {
-                    continue;
-                }
-
-                match status {
+            for (addr, control) in self.peers_controls.iter_mut() {
+                control.update_status();
+                
+                match &control.status {
                     PeerStatus::Connected { available_pieces } => {
                         let is_relevant = self.transfer.get_piece_for_peer(available_pieces).is_some();
 
                         if is_relevant {
-                            if let Some(tx) = self.peers_cmd_tx.get(addr) {
-                                if tx.is_closed() || tx.send(PeerCommand::SendInterested).is_err() {
-                                    println!("failed to send interested cmd to peer, dropping.");
-                                    *status = PeerStatus::Dropped;
-                                }
-                            }
-                            else {
-                                println!("failed to get tx for peer, dropping.");
-                                *status = PeerStatus::Dropped;
-                            }
+                            control.send_cmd(PeerCommand::SendInterested);
                         }
                     }
                     PeerStatus::Available { available_pieces } => {
-                        self.assigned_pieces.remove(addr);
-
                         let mut pieces_idx = Vec::with_capacity(5);
                         let mut pieces = Vec::with_capacity(5);
 
@@ -153,41 +113,31 @@ impl Engine {
                         }
 
                         if !pieces.is_empty() {
-                            self.assigned_pieces.insert(*addr, pieces_idx);
-                            
-                            if let Some(tx) = self.peers_cmd_tx.get(addr) {
-                                if tx.is_closed() || tx.send(PeerCommand::RequestPiece{ pieces }).is_err() {
-                                    println!("failed to send request cmd to peer, dropping.");
-                                    *status = PeerStatus::Dropped;   
-                                }
-                            }
-                            else {
-                                println!("failed to get tx for peer, dropping.");
-                                *status = PeerStatus::Dropped;
-                            }
+                            control.assign_pieces(pieces);
                         }
                     }
                     PeerStatus::RequestedPiece { piece } => {
                         let data = self.transfer.read_piece(*piece).await;
-
-                        if let Some(tx) = self.peers_cmd_tx.get(addr) {
-                            if tx.is_closed() || tx.send(PeerCommand::SendPiece { piece: *piece, data }).is_err() {
-                                *status = PeerStatus::Dropped;
-                            }
-                        }
+                        control.send_cmd(PeerCommand::SendPiece { piece: *piece, data });
                     }
                     _ => {}
                 }
             }
 
             if let Ok((piece, data)) = self.peers_piece_data_rx.try_recv() {
-                let peer = self.assigned_pieces.iter()
-                    .find(| (_, v) | v.contains(&piece))
-                    .map(| (k, _) | *k)
+                let peer = self.peers_controls.values_mut()
+                    .find(| v | v.has_piece_assigned(piece))
                 ;
 
                 if let Some(peer) = peer {
-                    self.assigned_pieces.remove(&peer);
+                    let idx = peer.assigned_pieces.iter()
+                        .enumerate()
+                        .find(| (_, (piece_idx, _)) | piece == *piece_idx)
+                        .map(| (idx, _) | idx)
+                        .unwrap()
+                    ;
+                    
+                    peer.assigned_pieces.remove(idx);
                 }
 
                 if self.transfer.add_complete_piece(piece, data).await {
@@ -215,8 +165,7 @@ impl Engine {
                 // self.send_message_to_trackers(TrackerEvent::Completed, true).await;
             }
             
-            self.validate_assigned_pieces();
-            self.clear_peers_list();
+            self.purge_peers_list();
 
             tokio::time::sleep(std::time::Duration::from_millis(50)).await;
         }
@@ -240,7 +189,7 @@ impl Engine {
     async fn add_peers(&mut self, peers: Vec<SocketAddrV4>) {
         let peers: Vec<SocketAddrV4> = peers
             .into_iter()
-            .filter(| addr | !self.peers_cmd_tx.contains_key(addr))
+            .filter(| addr | !self.peers_controls.contains_key(addr))
             .collect()
         ;
 
@@ -256,8 +205,15 @@ impl Engine {
             let complete_piece_rx = self.complete_piece_tx.subscribe();
             let complete_piece_data_tx = self.peers_piece_data_tx.clone();
 
-            self.peers_cmd_tx.insert(address, cmd_tx);
-            self.peers_status_rx.insert(address, peer_status_rx);
+            let peer_control = PeerControl {
+                status: PeerStatus::Waiting,
+                assigned_pieces: Vec::with_capacity(5),
+
+                cmd_tx,
+                status_rx: peer_status_rx
+            };
+
+            self.peers_controls.insert(address, peer_control);
 
             tokio::spawn(async move {
                 let new_peer = peer::TcpPeer::connect(
@@ -277,53 +233,65 @@ impl Engine {
         }
     }
 
-    /// Goes through assigned_pieces and checks the Peer is still alive.
-    /// Releases the piece otherwise.
-    fn validate_assigned_pieces(&mut self) {
-        let mut dropped_peers = Vec::new();
-
-        for (k, v) in self.assigned_pieces.iter() {
-            let mut release_pieces = true;
-
-            if let Some(peer_tx) = self.peers_cmd_tx.get(k) {
-                release_pieces = peer_tx.is_closed();
-            }
-
-            if release_pieces {
-                for piece in v {
-                    self.transfer.unassign_piece(*piece);
-                }
-
-                dropped_peers.push(*k);
-            }
-        }
-
-        for peer in dropped_peers {
-            self.assigned_pieces.remove(&peer);
-        }
-    }
-
-    fn clear_peers_list(&mut self) {
-        let peers_to_remove: Vec<(SocketAddrV4, PeerStatus)> = self.peers_status
+    /// Goes through each PeerControl and checks if the PeerStatus is Dropped.
+    /// Release the pieces in case it is.
+    fn purge_peers_list(&mut self) {
+        let peers_to_remove: Vec<SocketAddrV4> = self.peers_controls
             .iter()
-            .filter(| (_, v) | matches!(*v, PeerStatus::Dropped))
-            .map(| (k, v) | (*k, v.clone()))
+            .filter(| (_, v) | v.status == PeerStatus::Dropped)
+            .map(| (k, _) | (*k))
             .collect()
         ;
 
         if !peers_to_remove.is_empty() {
             println!("dropping {} peers", peers_to_remove.len());
 
-            for (peer, _) in peers_to_remove {
-                if let Some(pieces) = self.assigned_pieces.remove(&peer) {
-                    for piece in pieces {
+            for peer_address in peers_to_remove {
+                if let Some(control) = self.peers_controls.remove(&peer_address) {
+                    for (piece, _) in control.assigned_pieces {
                         self.transfer.unassign_piece(piece);
                     }
                 }
+            }
+        }
+    }
+}
 
-                self.peers_cmd_tx.remove(&peer);
-                self.peers_status.remove(&peer);
-                self.peers_status_rx.remove(&peer);
+pub struct PeerControl {
+    status: PeerStatus,
+    assigned_pieces: Vec<(usize, u64)>,
+    
+    cmd_tx: mpsc::UnboundedSender<PeerCommand>,
+    status_rx: watch::Receiver<PeerStatus>,
+}
+
+impl PeerControl {
+    fn send_cmd(&mut self, cmd: PeerCommand) {
+        if self.cmd_tx.send(cmd).is_err() {
+            println!("failed to send cmd to peer, dropping...");
+            self.status = PeerStatus::Dropped;
+        }
+    }
+
+    fn has_piece_assigned(&self, piece: usize) -> bool {
+        self.assigned_pieces.iter()
+            .any(| (idx, _) | *idx == piece)
+    }
+
+    fn assign_pieces(&mut self, pieces: Vec<(usize, u64)>) {
+        self.assigned_pieces = pieces.clone();
+        self.send_cmd(PeerCommand::RequestPiece { pieces });
+    }
+
+    fn update_status(&mut self) {
+        match self.status_rx.has_changed() {
+            Ok(has_changed) => {
+                if has_changed {
+                    self.status = self.status_rx.borrow_and_update().clone();
+                }
+            }
+            Err(_) => {
+                self.status = PeerStatus::Dropped;
             }
         }
     }
