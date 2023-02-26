@@ -219,26 +219,28 @@ impl TcpPeer {
 
             if self.peer_request_pending {
                 if let Some(piece) = self.peer_request.as_ref() {
-                    let piece_idx = piece.idx as u32;
-                    let block_length = piece.block_length as usize;
-                    let block_start = piece.block_offset as usize;
-                    let block_end = block_start + block_length;
-                    let block_data = piece.data[block_start..block_end].to_vec();
-
-                    assert!(block_data.len() == block_length);
-                    println!("sending piece data to {} (idx: {piece_idx}, offset: {block_start}, length: {block_length})", self.stream.peer_addr().unwrap());
-
-                    let message = Message::Piece {
-                        piece_idx,
-                        block_offset: block_start as u32,
-                        block_data
-                    };
-
-                    if !self.send_message(message).await {
-                        break;
-                    }
-                    else {
-                        self.peer_request_pending = false;
+                    if !piece.data.is_empty() {
+                        let piece_idx = piece.idx as u32;
+                        let block_length = piece.block_length as usize;
+                        let block_start = piece.block_offset as usize;
+                        let block_end = block_start + block_length;
+                        let block_data = piece.data[block_start..block_end].to_vec();
+    
+                        assert!(block_data.len() == block_length);
+                        println!("sending piece data to {} (idx: {piece_idx}, offset: {block_start}, length: {block_length})", self.stream.peer_addr().unwrap());
+    
+                        let message = Message::Piece {
+                            piece_idx,
+                            block_offset: block_start as u32,
+                            block_data
+                        };
+    
+                        if !self.send_message(message).await {
+                            break;
+                        }
+                        else {
+                            self.peer_request_pending = false;
+                        }
                     }
                 }
             }
