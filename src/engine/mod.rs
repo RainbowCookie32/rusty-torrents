@@ -19,7 +19,7 @@ pub struct Engine {
     transfer: Transfer,
 
     /// A map of peers and their assigned pieces.
-    assigned_pieces: HashMap<SocketAddrV4, usize>,
+    assigned_pieces: HashMap<SocketAddrV4, Vec<usize>>,
 
     stop_rx: oneshot::Receiver<()>,
     // FIXME: This is lazyness. I could create the channel later and have
@@ -124,10 +124,12 @@ impl Engine {
                         if is_relevant {
                             if let Some(tx) = self.peers_cmd_tx.get(addr) {
                                 if tx.is_closed() || tx.send(PeerCommand::SendInterested).is_err() {
+                                    println!("failed to send interested cmd to peer, dropping.");
                                     *status = PeerStatus::Dropped;
                                 }
                             }
                             else {
+                                println!("failed to get tx for peer, dropping.");
                                 *status = PeerStatus::Dropped;
                             }
                         }
@@ -135,24 +137,32 @@ impl Engine {
                     PeerStatus::Available { available_pieces } => {
                         self.assigned_pieces.remove(addr);
 
-                        let target_piece = self.transfer.get_piece_for_peer(available_pieces);
-    
-                        if let Some(piece_info) = target_piece {
-                            let piece = piece_info.idx();
-                            let length = piece_info.length() as u64;
+                        let mut pieces_idx = Vec::with_capacity(5);
+                        let mut pieces = Vec::with_capacity(5);
+
+                        while let Some(piece) = self.transfer.get_piece_for_peer(available_pieces) {
+                            println!("assigned piece {} to peer {addr}", piece.idx());
+                                    
+                            piece.set_assigned(*addr);
+                            pieces_idx.push(piece.idx());
+                            pieces.push((piece.idx(), piece.length() as u64));
+
+                            if pieces.len() == 5 {
+                                break;
+                            }
+                        }
+
+                        if !pieces.is_empty() {
+                            self.assigned_pieces.insert(*addr, pieces_idx);
                             
                             if let Some(tx) = self.peers_cmd_tx.get(addr) {
-                                if !tx.is_closed() && tx.send(PeerCommand::RequestPiece{piece, length}).is_ok() {
-                                    println!("assigned piece {} to peer {addr}", piece);
-                                    
-                                    piece_info.set_assigned(*addr);
-                                    self.assigned_pieces.insert(*addr, piece);
-                                }
-                                else {
-                                    *status = PeerStatus::Dropped;
+                                if tx.is_closed() || tx.send(PeerCommand::RequestPiece{ pieces }).is_err() {
+                                    println!("failed to send request cmd to peer, dropping.");
+                                    *status = PeerStatus::Dropped;   
                                 }
                             }
                             else {
+                                println!("failed to get tx for peer, dropping.");
                                 *status = PeerStatus::Dropped;
                             }
                         }
@@ -172,7 +182,7 @@ impl Engine {
 
             if let Ok((piece, data)) = self.peers_piece_data_rx.try_recv() {
                 let peer = self.assigned_pieces.iter()
-                    .find(| (_, v) | **v == piece)
+                    .find(| (_, v) | v.contains(&piece))
                     .map(| (k, _) | *k)
                 ;
 
@@ -270,27 +280,26 @@ impl Engine {
     /// Goes through assigned_pieces and checks the Peer is still alive.
     /// Releases the piece otherwise.
     fn validate_assigned_pieces(&mut self) {
-        let mut assignments_to_remove = Vec::new();
+        let mut dropped_peers = Vec::new();
 
         for (k, v) in self.assigned_pieces.iter() {
-            let mut release_piece = true;
+            let mut release_pieces = true;
 
             if let Some(peer_tx) = self.peers_cmd_tx.get(k) {
-                release_piece = peer_tx.is_closed();
+                release_pieces = peer_tx.is_closed();
             }
 
-            if release_piece {
-                assignments_to_remove.push((*k, *v));
+            if release_pieces {
+                for piece in v {
+                    self.transfer.unassign_piece(*piece);
+                }
+
+                dropped_peers.push(*k);
             }
         }
 
-        if !assignments_to_remove.is_empty() {
-            println!("found {} orphan assignments", assignments_to_remove.len());
-
-            for (peer, piece) in assignments_to_remove.iter() {
-                self.transfer.unassign_piece(*piece);
-                self.assigned_pieces.remove(peer);
-            }
+        for peer in dropped_peers {
+            self.assigned_pieces.remove(&peer);
         }
     }
 
@@ -306,8 +315,10 @@ impl Engine {
             println!("dropping {} peers", peers_to_remove.len());
 
             for (peer, _) in peers_to_remove {
-                if let Some(piece) = self.assigned_pieces.remove(&peer) {
-                    self.transfer.unassign_piece(piece);
+                if let Some(pieces) = self.assigned_pieces.remove(&peer) {
+                    for piece in pieces {
+                        self.transfer.unassign_piece(piece);
+                    }
                 }
 
                 self.peers_cmd_tx.remove(&peer);

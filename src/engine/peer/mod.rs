@@ -50,7 +50,7 @@ pub enum PeerCommand {
     SendInterested,
 
     SendPiece { piece: usize, data: Vec<u8> },
-    RequestPiece { piece: usize, length: u64 }
+    RequestPiece { pieces: Vec<(usize, u64)> }
 }
 
 pub struct TcpPeer {
@@ -82,6 +82,8 @@ pub struct TcpPeer {
 
     /// The piece we requested to the Peer.
     client_request: Option<PieceRequest>,
+    /// The next pieces to request.
+    client_request_queue: Vec<PieceRequest>,
 
     /// Gets commands from the Engine, like Piece requests,
     /// or disconnects.
@@ -136,6 +138,7 @@ impl TcpPeer {
                 peer_request_pending: false,
                 
                 client_request: None,
+                client_request_queue: Vec::new(),
     
                 cmd_rx,
                 peer_status_tx,
@@ -154,11 +157,13 @@ impl TcpPeer {
     /// and receives/sends messages about the active torrent.
     pub async fn connect_to_peer(mut self) {
         if !self.send_handshake().await {
+            println!("failed to send handshake to peer, dropping.");
             self.update_peer_status(PeerStatus::Dropped);
             return;
         }
 
         if !self.send_message(Message::Bitfield { bitfield: Bitfield::from_pieces(self.completed_pieces.clone()) }).await {
+            println!("failed to send bitfield to peer, dropping.");
             self.update_peer_status(PeerStatus::Dropped);
             return;
         }
@@ -351,10 +356,12 @@ impl TcpPeer {
                                         .expect("Failed to send Piece data to Engine")
                                     ;
 
-                                    self.client_request = None;
+                                    self.client_request = self.client_request_queue.pop();
                                     self.time_since_assign = None;
 
-                                    self.update_peer_status(PeerStatus::Available { available_pieces: self.available_pieces.clone() });
+                                    if self.client_request.is_none() {
+                                        self.update_peer_status(PeerStatus::Available { available_pieces: self.available_pieces.clone() });
+                                    }
                                 }
                             }
                             else {
@@ -422,17 +429,32 @@ impl TcpPeer {
                         }
                     }
                 }
-                PeerCommand::RequestPiece{ piece, length } => {
-                    let request = PieceRequest {
-                        idx: piece,
-                        size: length as usize,
-                        data: Vec::with_capacity(length as usize),
+                PeerCommand::RequestPiece{ pieces } => {
+                    let mut pieces = pieces.into_iter()
+                        .map(| (piece, length) | {
+                            PieceRequest {
+                                idx: piece,
+                                size: length as usize,
+                                data: Vec::with_capacity(length as usize),
+        
+                                block_offset: 0,
+                                block_length: 0,
+                            }
+                        })
+                        .collect::<Vec<PieceRequest>>()
+                    ;
 
-                        block_offset: 0,
-                        block_length: 0,
-                    };
-                    
-                    self.client_request = Some(request);
+                    if self.client_request.is_none() {
+                        self.client_request = pieces.pop();
+                    }
+
+                    if self.client_request_queue.is_empty() {
+                        self.client_request_queue = pieces;
+                    }
+                    else {
+                        self.client_request_queue.append(&mut pieces);
+                    }
+
                     self.time_since_assign = Some(Instant::now());
                 }
             }
