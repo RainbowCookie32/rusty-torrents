@@ -381,8 +381,9 @@ impl TcpPeer {
                     }
                 }
             }
-
-            time::sleep(Duration::from_millis(5)).await;
+            else {
+                time::sleep(Duration::from_millis(5)).await;
+            }
         }
 
         self.update_peer_status(PeerStatus::Dropped);
