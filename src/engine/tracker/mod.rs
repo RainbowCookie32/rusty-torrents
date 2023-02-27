@@ -152,7 +152,7 @@ impl Tracker {
             if progress.left == 0 && !self.complete_announced {
                 "completed"
             }
-            else if reannounce {
+            else if !reannounce {
                 "started"
             }
             else {
