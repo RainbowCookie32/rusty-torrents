@@ -245,12 +245,14 @@ impl Transfer {
     async fn write_piece(&mut self, piece: usize, data: Vec<u8>) {
         assert!(piece < self.pieces.len());
 
+        let piece_length = data.len();
         let piece_file_i = self.pieces[piece].start_file as usize;
         let piece_offset = self.pieces[piece].start_position as usize;
+        
         let mut piece_file = &mut self.files[piece_file_i];
 
         let file_size = piece_file.metadata().await.unwrap().len();
-        let split_piece = piece_offset as usize + data.len() > file_size as usize;
+        let split_piece = piece_offset as usize + piece_length > file_size as usize;
 
         piece_file
             .seek(SeekFrom::Start(piece_offset as u64))
@@ -258,6 +260,8 @@ impl Transfer {
             .expect("file seek failed")
         ;
 
+        // FIXME: This code assumes a piece can only contain data for 2 files.
+        // This assumption was made with 0 evidence to back it up.
         if split_piece {
             let bytes_to_write = file_size as usize - piece_offset;
             let first_batch = &data[0..bytes_to_write];
@@ -266,6 +270,13 @@ impl Transfer {
             piece_file.write_all(first_batch).await.expect("failed to write piece");
 
             piece_file = &mut self.files[piece_file_i + 1];
+            
+            piece_file
+                .seek(SeekFrom::Start(0))
+                .await
+                .expect("file seek failed")
+            ;
+
             piece_file.write_all(second_batch).await.expect("failed to write piece");
         }
         else {
