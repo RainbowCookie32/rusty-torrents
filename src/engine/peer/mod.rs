@@ -1,7 +1,7 @@
 pub mod message;
 
 use std::sync::Arc;
-use std::net::SocketAddrV4;
+use std::net::SocketAddr;
 use std::time::{Duration, Instant};
 
 use bytes::Buf;
@@ -110,7 +110,7 @@ impl TcpPeer {
     // Gets the address of the Peer and attemps to create a TcpStream to it.
     // Connection attempts should only happen after checking the torrent!
     pub async fn connect(
-        address: SocketAddrV4,
+        address: SocketAddr,
         info_hash: Arc<[u8; 20]>,
         completed_pieces: Vec<bool>,
         cmd_rx: CmdRx,

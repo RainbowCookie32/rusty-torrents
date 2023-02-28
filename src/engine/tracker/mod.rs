@@ -1,6 +1,6 @@
 use std::sync::Arc;
 use std::time::{Duration, Instant};
-use std::net::{SocketAddrV4, Ipv4Addr};
+use std::net::{SocketAddr, SocketAddrV4, SocketAddrV6, Ipv4Addr, Ipv6Addr};
 
 use bytes::Buf;
 use reqwest::Client;
@@ -12,7 +12,7 @@ use tokio::net::UdpSocket;
 use crate::bencode::BEncodeType;
 use crate::engine::transfer::TransferProgress;
 
-type PeersTx = mpsc::Sender<Vec<SocketAddrV4>>;
+type PeersTx = mpsc::Sender<Vec<SocketAddr>>;
 type ProgressRx = broadcast::Receiver<TransferProgress>;
 
 enum TrackerKind {
@@ -26,7 +26,7 @@ pub struct TrackersHandler {
 
     trackers: Vec<Tracker>,
 
-    new_peers_tx: mpsc::Sender<Vec<SocketAddrV4>>,
+    new_peers_tx: mpsc::Sender<Vec<SocketAddr>>,
     transfer_progress_rx: broadcast::Receiver<TransferProgress>
 }
 
@@ -146,7 +146,7 @@ impl Tracker {
         }
     }
 
-    pub async fn announce_tcp(&mut self, client: &Client, hash: &[u8; 20], progress: &TransferProgress, reannounce: bool) -> Option<Vec<SocketAddrV4>> {
+    pub async fn announce_tcp(&mut self, client: &Client, hash: &[u8; 20], progress: &TransferProgress, reannounce: bool) -> Option<Vec<SocketAddr>> {
         let hash = urlencoding::encode_binary(hash);
         let event = {
             if progress.left == 0 && !self.complete_announced {
@@ -173,18 +173,32 @@ impl Tracker {
         let response_dictionary = BEncodeType::dictionary(&body_bytes, &mut 1);
         let response_dictionary_hm = response_dictionary.get_dictionary();
 
-        let peers = response_dictionary_hm.get("peers")?;
-        let peers_bytes = peers.get_string_bytes();
-        let mut peers_slice = peers_bytes.as_slice();
+        let mut peers_list = Vec::new();
 
-        let mut peers_list = Vec::with_capacity(peers_bytes.len() / 6);
+        if let Some(peers_v4) = response_dictionary_hm.get("peers") {
+            let peers_bytes = peers_v4.get_string_bytes();
+            let mut peers_slice = peers_bytes.as_slice();
 
-        for _ in (0..peers_bytes.len()).step_by(6) {
-            let ip = peers_slice.get_u32();
-            let port = peers_slice.get_u16();
-            let addr = SocketAddrV4::new(Ipv4Addr::from(ip), port);
+            for _ in (0..peers_bytes.len()).step_by(6) {
+                let ip = peers_slice.get_u32();
+                let port = peers_slice.get_u16();
+                let addr = SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::from(ip), port));
 
-            peers_list.push(addr);
+                peers_list.push(addr);
+            }
+        }
+
+        if let Some(peers_v6) = response_dictionary_hm.get("peers6") {
+            let peers_bytes = peers_v6.get_string_bytes();
+            let mut peers_slice = peers_bytes.as_slice();
+
+            for _ in (0..peers_bytes.len()).step_by(18) {
+                let ip = peers_slice.get_u128();
+                let port = peers_slice.get_u16();
+                let addr = SocketAddr::V6(SocketAddrV6::new(Ipv6Addr::from(ip), port, 0, 0));
+
+                peers_list.push(addr);
+            }
         }
 
         if let Some(interval) = response_dictionary_hm.get("interval") {

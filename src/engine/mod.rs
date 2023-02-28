@@ -3,7 +3,7 @@ mod tracker;
 mod transfer;
 
 use std::path::PathBuf;
-use std::net::SocketAddrV4;
+use std::net::SocketAddr;
 use std::collections::HashMap;
 
 use tokio::fs;
@@ -21,9 +21,9 @@ pub struct Engine {
     stop_rx: oneshot::Receiver<()>,
     // FIXME: This is lazyness. I could create the channel later and have
     // peers_tx be an Option, but lazyness.
-    peers_tx: mpsc::Sender<Vec<SocketAddrV4>>,
-    peers_rx: mpsc::Receiver<Vec<SocketAddrV4>>,
-    peers_controls: HashMap<SocketAddrV4, PeerControl>,
+    peers_tx: mpsc::Sender<Vec<SocketAddr>>,
+    peers_rx: mpsc::Receiver<Vec<SocketAddr>>,
+    peers_controls: HashMap<SocketAddr, PeerControl>,
     
     complete_piece_tx: broadcast::Sender<usize>,
     transfer_progress_tx: broadcast::Sender<TransferProgress>,
@@ -186,8 +186,8 @@ impl Engine {
         });
     }
 
-    async fn add_peers(&mut self, peers: Vec<SocketAddrV4>) {
-        let peers: Vec<SocketAddrV4> = peers
+    async fn add_peers(&mut self, peers: Vec<SocketAddr>) {
+        let peers: Vec<SocketAddr> = peers
             .into_iter()
             .filter(| addr | !self.peers_controls.contains_key(addr))
             .collect()
@@ -236,7 +236,7 @@ impl Engine {
     /// Goes through each PeerControl and checks if the PeerStatus is Dropped.
     /// Release the pieces in case it is.
     fn purge_peers_list(&mut self) {
-        let peers_to_remove: Vec<SocketAddrV4> = self.peers_controls
+        let peers_to_remove: Vec<SocketAddr> = self.peers_controls
             .iter()
             .filter(| (_, v) | v.status == PeerStatus::Dropped)
             .map(| (k, _) | (*k))

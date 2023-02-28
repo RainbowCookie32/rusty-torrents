@@ -1,7 +1,7 @@
 use std::sync::Arc;
 use std::path::Path;
 use std::io::SeekFrom;
-use std::net::SocketAddrV4;
+use std::net::SocketAddr;
 
 use sha1::Sha1;
 
@@ -364,7 +364,7 @@ pub struct TransferPiece {
     start_file: usize,
     start_position: usize,
 
-    assigned_to: Option<SocketAddrV4>,
+    assigned_to: Option<SocketAddr>,
 }
 
 impl TransferPiece {
@@ -376,7 +376,7 @@ impl TransferPiece {
         self.length
     }
 
-    pub fn set_assigned(&mut self, address: SocketAddrV4) {
+    pub fn set_assigned(&mut self, address: SocketAddr) {
         self.assigned_to = Some(address);
     }
 }
