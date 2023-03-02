@@ -35,5 +35,5 @@ async fn main() {
     /*let app = ui::App::new(stop_tx, torrent_info, progress_rx).await;
     app.draw();*/
 
-    handle.await;
+    handle.await.expect("failed to await engine task");
 }

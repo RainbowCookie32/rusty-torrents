@@ -130,7 +130,7 @@ impl BEncodeType {
         }
 
         let dictionary_bytes = &data[start as usize - 1..*position];
-        let dictionary_sha1 = sha1::Sha1::from(dictionary_bytes);
+        let dictionary_sha1 = sha1_smol::Sha1::from(dictionary_bytes);
 
         let hash = dictionary_sha1.digest().bytes();
         let hash_string = dictionary_sha1.hexdigest();

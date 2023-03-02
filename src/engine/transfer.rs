@@ -3,7 +3,7 @@ use std::path::Path;
 use std::io::SeekFrom;
 use std::net::SocketAddr;
 
-use sha1::Sha1;
+use sha1_smol::Sha1;
 
 use tokio::fs;
 use tokio::fs::File;
