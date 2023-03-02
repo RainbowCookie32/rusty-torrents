@@ -580,7 +580,7 @@ impl Bitfield {
         }
     }
 
-    pub fn from_peer_data(data: Vec<u8>) -> Bitfield {
+    pub fn from_peer_data(data: &[u8]) -> Bitfield {
         let mut result = Vec::new();
 
         for byte in data {

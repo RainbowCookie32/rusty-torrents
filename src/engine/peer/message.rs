@@ -37,7 +37,7 @@ impl From<Vec<u8>> for Message {
             2 => Message::Interested,
             3 => Message::NotInterested,
             4 => Message::Have { piece: data_slice.get_u32() },
-            5 => Message::Bitfield { bitfield: Bitfield::from_peer_data(data_slice.to_vec()) },
+            5 => Message::Bitfield { bitfield: Bitfield::from_peer_data(data_slice) },
             6 => {
                 let piece_idx = data_slice.get_u32();
                 let block_offset = data_slice.get_u32();
