@@ -232,7 +232,7 @@ impl Engine {
     fn purge_peers_list(&mut self) {
         let peers_to_remove: Vec<SocketAddr> = self.peers_controls
             .iter()
-            .filter(| (_, v) | v.status == PeerStatus::Dropped)
+            .filter(| (_, v) | v.cmd_tx.is_closed() || v.status == PeerStatus::Dropped)
             .map(| (k, _) | (*k))
             .collect()
         ;
