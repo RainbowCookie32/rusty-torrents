@@ -74,62 +74,61 @@ impl From<Message> for Vec<u8> {
             Message::NotInterested => vec![0, 0, 0, 1, 3],
             
             Message::Have { piece } => {
-                let mut message = Vec::new();
+                // Length (4 bytes) + message kind (1 byte) + piece idx (4 bytes).
+                let mut message = Vec::with_capacity(12);
                 
-                // Length (1 for Message ID + 4 for the Piece index).
-                message.append(&mut 5_u32.to_be_bytes().to_vec());
+                message.extend_from_slice(&5_u32.to_be_bytes());
                 message.push(4);
-                // Piece index.
-                message.append(&mut piece.to_be_bytes().to_vec());
+                message.extend_from_slice(&piece.to_be_bytes());
 
                 message
             }
             Message::Bitfield { bitfield } => {
-                let mut bitfield = bitfield.as_bytes();
-                let mut message = Vec::new();
+                let bitfield = bitfield.as_bytes();
+                let mut message = Vec::with_capacity(bitfield.len() + 5);
 
                 let len = bitfield.len() as u32 + 1;
 
-                message.append(&mut len.to_be_bytes().to_vec());
+                message.extend_from_slice(&len.to_be_bytes());
                 message.push(5);
-                message.append(&mut bitfield);
+                message.extend_from_slice(&bitfield);
 
                 message
             }
             Message::Request { piece_idx, block_offset, block_length } => {
-                let mut message = Vec::new();
+                let mut message = Vec::with_capacity(17);
                 
                 // Length (1 for Message ID + 4 for the Piece index + 8 for block offset and length).
-                message.append(&mut 13_u32.to_be_bytes().to_vec());
+                message.extend_from_slice(&13_u32.to_be_bytes());
                 message.push(6);
-                message.append(&mut piece_idx.to_be_bytes().to_vec());
-                message.append(&mut block_offset.to_be_bytes().to_vec());
-                message.append(&mut block_length.to_be_bytes().to_vec());
+                message.extend_from_slice(&piece_idx.to_be_bytes());
+                message.extend_from_slice(&block_offset.to_be_bytes());
+                message.extend_from_slice(&block_length.to_be_bytes());
 
                 message
             }
-            Message::Piece { piece_idx, block_offset, mut block_data } => {
-                let mut message = Vec::new();
+            Message::Piece { piece_idx, block_offset, block_data } => {
+                let mut message = Vec::with_capacity(12 + block_data.len());
                 // 1 for Message ID, 4 for piece idx, 4 for block offset, then block length.
                 let length = 9 + block_data.len() as u32;
                 
-                message.append(&mut length.to_be_bytes().to_vec());
+                message.extend_from_slice(&length.to_be_bytes());
                 message.push(7);
-                message.append(&mut piece_idx.to_be_bytes().to_vec());
-                message.append(&mut block_offset.to_be_bytes().to_vec());
-                message.append(&mut block_data);
+                message.extend_from_slice(&piece_idx.to_be_bytes());
+                message.extend_from_slice(&block_offset.to_be_bytes());
+                message.extend_from_slice(&block_data);
 
                 message
             }
             Message::Cancel { piece_idx, block_offset, block_length } => {
-                let mut message = Vec::new();
+                let mut message = Vec::with_capacity(17);
                 
                 // Length (1 for Message ID + 4 for the Piece index + 8 for block offset and length).
-                message.append(&mut 13_u32.to_be_bytes().to_vec());
+                message.extend_from_slice(&13_u32.to_be_bytes());
                 message.push(8);
-                message.append(&mut piece_idx.to_be_bytes().to_vec());
-                message.append(&mut block_offset.to_be_bytes().to_vec());
-                message.append(&mut block_length.to_be_bytes().to_vec());
+                message.extend_from_slice(&piece_idx.to_be_bytes());
+                message.extend_from_slice(&block_offset.to_be_bytes());
+                message.extend_from_slice(&block_length.to_be_bytes());
 
                 message
             }
