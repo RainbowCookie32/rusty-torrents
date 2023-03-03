@@ -2,7 +2,7 @@ pub mod message;
 
 use std::sync::Arc;
 use std::net::SocketAddr;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use bytes::Buf;
 use tokio::time;
@@ -98,12 +98,8 @@ pub struct TcpPeer {
     /// for checking and writing.
     complete_piece_data_tx: mpsc::UnboundedSender<(usize, Vec<u8>)>,
 
-    /// The amount of time the peer had us choked for.
-    choked_since: Option<Instant>,
-    /// The amount of time we've been waiting for the peer to reply.
-    waiting_since: Option<Instant>,
-    /// The amount of time that passed since the Piece assigned.
-    time_since_assign: Option<Instant>
+    /// true if we sent a request message and are waiting for the reply.
+    waiting_for_block: bool,
 }
 
 impl TcpPeer {
@@ -146,9 +142,7 @@ impl TcpPeer {
                 complete_piece_rx,
                 complete_piece_data_tx,
     
-                choked_since: None,
-                waiting_since: None,
-                time_since_assign: None,
+                waiting_for_block: false,
             }
         )
     }
@@ -182,43 +176,23 @@ impl TcpPeer {
                 }
             }
 
-            if let Some(time_choked) = self.choked_since.as_ref() {
-                if time_choked.elapsed() > Duration::from_secs(300) {
-                    // If we spent 5 minutes choked, it's probably time to find another peer.
-                    break;
-                }
-            }
-
-            if let Some(time_waiting) = self.waiting_since.as_ref() {
-                if time_waiting.elapsed() > Duration::from_secs(30) {
-                    // 30 whole seconds waiting for a Piece. yeet.
-                    break;
-                }
-            }
-            else if let Some(piece) = self.client_request.as_ref() {
-                let piece_idx = piece.idx as u32;
-                let block_offset = piece.data.len() as u32;
-                let block_length = (piece.size - piece.data.len()).min(16384) as u32;
-
-                let message = Message::Request { piece_idx, block_offset, block_length };
-
-                self.update_peer_status(PeerStatus::Waiting);
-
-                if self.send_message(message).await {
-                    self.waiting_since = Some(Instant::now());
-                }
-                else {
-                    break;
-                }
-            }
-
-            if let Some(time_since_assign) = self.time_since_assign.as_ref() {
-                // Pieces are usually small (biggest I've seen so far was 1.5MB).
-                // If we can't get a whole piece from a Peer in less than 60 seconds,
-                // then we might have a pretty slow peer on our hands.
-                if time_since_assign.elapsed() > Duration::from_secs(60) {
-                    println!("slow peer detected, dropping...");
-                    break;
+            if !self.waiting_for_block {
+                if let Some(piece) = self.client_request.as_ref() {
+                    let piece_idx = piece.idx as u32;
+                    let block_offset = piece.data.len() as u32;
+                    let block_length = (piece.size - piece.data.len()).min(16384) as u32;
+    
+                    let message = Message::Request { piece_idx, block_offset, block_length };
+    
+                    self.update_peer_status(PeerStatus::Waiting);
+    
+                    if self.send_message(message).await {
+                        self.waiting_for_block = true;
+                    }
+                    else {
+                        println!("failed to send request message to peer");
+                        break;
+                    }
                 }
             }
 
@@ -241,6 +215,7 @@ impl TcpPeer {
                         };
     
                         if !self.send_message(message).await {
+                            println!("failed to send piece message to peer");
                             break;
                         }
                         else {
@@ -264,8 +239,6 @@ impl TcpPeer {
                     Message::KeepAlive => {}
                     Message::Choke => {
                         self.peer_choking = true;
-                        self.choked_since = Some(Instant::now());
-
                         self.update_peer_status(PeerStatus::Waiting);
                     }
                     Message::Unchoke => {
@@ -273,7 +246,6 @@ impl TcpPeer {
                         // Only update status if we are actually chaging from Choked to Unchoked.
                         if self.peer_choking {
                             self.peer_choking = false;
-                            self.choked_since = None;
 
                             if !self.available_pieces.is_empty() {
                                 self.update_peer_status(PeerStatus::Available { available_pieces: self.available_pieces.clone() });
@@ -287,7 +259,6 @@ impl TcpPeer {
                             self.client_choking = false;
                             
                             if !self.send_message(Message::Unchoke).await {
-                                self.update_peer_status(PeerStatus::Dropped);
                                 break;
                             }
                         }
@@ -299,7 +270,7 @@ impl TcpPeer {
                             self.client_choking = true;
 
                             if !self.send_message(Message::Choke).await {
-                                self.update_peer_status(PeerStatus::Dropped);
+                                println!("failed to send choke message to peer");
                                 break;
                             }
                         }
@@ -308,6 +279,7 @@ impl TcpPeer {
                         let piece = piece as usize;
 
                         if piece >= self.available_pieces.len() {
+                            println!("peer sent have message for an invalid piece");
                             break;
                         }
                         
@@ -357,7 +329,6 @@ impl TcpPeer {
                                     ;
 
                                     self.client_request = self.client_request_queue.pop();
-                                    self.time_since_assign = None;
 
                                     if self.client_request.is_none() {
                                         self.update_peer_status(PeerStatus::Available { available_pieces: self.available_pieces.clone() });
@@ -366,15 +337,17 @@ impl TcpPeer {
                             }
                             else {
                                 // Peer sent the wrong piece piece, drop.
+                                println!("peer sent the wrong piece");
                                 break;
                             }
                         }
                         else {
                             // Peer sent an unsolicited piece, drop.
+                            println!("peer sent a piece we didn't request");
                             break;
                         }
 
-                        self.waiting_since = None;
+                        self.waiting_for_block = false;
                     }
                     Message::Cancel { .. } => {
                         self.client_request = None;
@@ -413,11 +386,13 @@ impl TcpPeer {
                     self.client_interested = true;
 
                     if self.client_choking && !self.send_message(Message::Unchoke).await {
+                        println!("failed to send unchoke message to peer");
                         // Error sending message, drop.
                         return true;
                     }
 
                     if !self.client_interested && !self.send_message(Message::Interested).await {
+                        println!("failed to send interested message to peer");
                         // Error sending message, drop.
                         return true;
                     }
@@ -455,8 +430,6 @@ impl TcpPeer {
                     else {
                         self.client_request_queue.append(&mut pieces);
                     }
-
-                    self.time_since_assign = Some(Instant::now());
                 }
             }
         }
@@ -489,13 +462,7 @@ impl TcpPeer {
     /// if the message couldn't be sent.
     async fn send_message(&mut self, message: Message) -> bool {
         let msg_buf: Vec<u8> = message.into();
-
-        if let Ok(result) = time::timeout(Duration::from_secs(30), self.stream.write_all(&msg_buf)).await {
-            result.is_ok()
-        }
-        else {
-            false
-        }
+        self.stream.write_all(&msg_buf).await.is_ok()
     }
 
     async fn send_handshake(&mut self) -> bool {
