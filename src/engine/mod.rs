@@ -19,10 +19,6 @@ pub struct Engine {
     transfer: Transfer,
 
     stop_rx: oneshot::Receiver<()>,
-    // FIXME: This is lazyness. I could create the channel later and have
-    // peers_tx be an Option, but lazyness.
-    peers_tx: mpsc::Sender<Vec<SocketAddr>>,
-    peers_rx: mpsc::Receiver<Vec<SocketAddr>>,
     peers_controls: HashMap<SocketAddr, PeerControl>,
     
     complete_piece_tx: broadcast::Sender<usize>,
@@ -39,8 +35,6 @@ impl Engine {
 
         let transfer = Transfer::create(torrent_data, output_path.as_path()).await;
 
-        let (peers_tx, peers_rx) = mpsc::channel(5);
-
         let (complete_piece_tx, _) = broadcast::channel(50);
         let (transfer_progress_tx, _) = broadcast::channel(5);
         let (peers_piece_data_tx, peers_piece_data_rx) = mpsc::unbounded_channel();
@@ -49,8 +43,6 @@ impl Engine {
             transfer,
 
             stop_rx,
-            peers_tx,
-            peers_rx,
             peers_controls: HashMap::new(),
 
             complete_piece_tx,
@@ -67,9 +59,9 @@ impl Engine {
 
     pub async fn start_torrent(&mut self) {
         let mut complete = false;
-        
         self.transfer.check_torrent().await;
-        self.start_trackers_task().await;
+        
+        let mut peers_rx = self.start_trackers_task().await;
 
         loop {
             if self.stop_rx.try_recv().is_ok() {
@@ -81,7 +73,7 @@ impl Engine {
                 break;
             }
 
-            if let Ok(list) = self.peers_rx.try_recv() {
+            if let Ok(list) = peers_rx.try_recv() {
                 self.add_peers(list).await;
             }
 
@@ -171,19 +163,21 @@ impl Engine {
         }
     }
 
-    async fn start_trackers_task(&self) {
+    async fn start_trackers_task(&self) -> mpsc::Receiver<Vec<SocketAddr>> {
         let info_hash = self.transfer.info_hash();
         let progress = self.transfer.get_progress();
 
         let trackers = self.transfer.get_trackers();
 
-        let peers_tx = self.peers_tx.clone();
+        let (peers_tx, peers_rx) = mpsc::channel(5);
         let progress_rx = self.transfer_progress_tx.subscribe();
 
         tokio::spawn(async move {
             let trackers_handler = TrackersHandler::init(info_hash, progress, trackers, peers_tx, progress_rx);
             trackers_handler.start().await;
         });
+
+        peers_rx
     }
 
     async fn add_peers(&mut self, peers: Vec<SocketAddr>) {
