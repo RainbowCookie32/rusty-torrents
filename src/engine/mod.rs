@@ -92,9 +92,7 @@ impl Engine {
                         let mut pieces_idx = Vec::with_capacity(5);
                         let mut pieces = Vec::with_capacity(5);
 
-                        while let Some(piece) = self.transfer.get_piece_for_peer(available_pieces) {
-                            println!("assigned piece {} to peer {addr}", piece.idx());
-                                    
+                        while let Some(piece) = self.transfer.get_piece_for_peer(available_pieces) {        
                             piece.set_assigned(*addr);
                             pieces_idx.push(piece.idx());
                             pieces.push((piece.idx(), piece.length() as u64));
@@ -105,6 +103,8 @@ impl Engine {
                         }
 
                         if !pieces.is_empty() {
+                            let printable_pieces: Vec<&usize> = pieces.iter().map(| (idx, _) | idx).collect();
+                            println!("[{addr}]: assigned pieces {:?}", printable_pieces);
                             control.assign_pieces(pieces);
                         }
                     }
@@ -133,8 +133,6 @@ impl Engine {
                 }
 
                 if self.transfer.add_complete_piece(piece, data).await {
-                    println!("piece {piece} was written to disk");
-
                     self.complete_piece_tx
                         .send(piece)
                         .expect("failed to send complete piece message")
@@ -238,8 +236,6 @@ impl Engine {
         ;
 
         if !peers_to_remove.is_empty() {
-            println!("dropping {} peers", peers_to_remove.len());
-
             for peer_address in peers_to_remove {
                 if let Some(control) = self.peers_controls.remove(&peer_address) {
                     for (piece, _) in control.assigned_pieces {
