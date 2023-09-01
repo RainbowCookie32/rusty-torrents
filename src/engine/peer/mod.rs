@@ -188,9 +188,8 @@ impl TcpPeer {
     
                     let message = Message::Request { piece_idx, block_offset, block_length };
     
-                    self.update_peer_status(PeerStatus::Waiting);
-    
                     if self.send_message(message).await {
+                        self.update_peer_status(PeerStatus::Waiting);
                         self.waiting_for_block = true;
                     }
                     else {
