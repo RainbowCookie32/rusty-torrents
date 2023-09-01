@@ -4,7 +4,7 @@ use std::sync::Arc;
 use std::net::SocketAddr;
 use std::time::Duration;
 
-use bytes::Buf;
+use bytes::*;
 use tokio::time;
 use tokio::net::TcpStream;
 use tokio::sync::{broadcast, mpsc, watch};
@@ -455,6 +455,7 @@ impl TcpPeer {
             let read_bytes = self.stream.read_exact(&mut msg_buf).await.ok()?;
 
             if read_bytes == msg_length {
+                let msg_buf = Bytes::from(msg_buf);
                 message = Some(msg_buf.into());
             }
         }
@@ -465,7 +466,7 @@ impl TcpPeer {
     /// Try to send a message through the TcpStream. Returns false
     /// if the message couldn't be sent.
     async fn send_message(&mut self, message: Message) -> bool {
-        let msg_buf: Vec<u8> = message.into();
+        let msg_buf: Bytes = message.into();
         self.stream.write_all(&msg_buf).await.is_ok()
     }
 
