@@ -55,6 +55,8 @@ pub enum PeerCommand {
 
 pub struct TcpPeer {
     stream: TcpStream,
+    address: SocketAddr,
+
     /// SHA-1 hash of the info section of the torrent file.
     info_hash: Arc<[u8; 20]>,
 
@@ -114,11 +116,13 @@ impl TcpPeer {
         complete_piece_rx: PieceRx,
         complete_piece_data_tx: PieceDataTx
     ) -> Option<TcpPeer> {
-        let stream = TcpStream::connect(address).await.ok()?;
+        let stream = TcpStream::connect(&address).await.ok()?;
 
         Some(
             TcpPeer {
                 stream,
+                address,
+
                 info_hash,
     
                 peer_interested: false,
@@ -151,13 +155,13 @@ impl TcpPeer {
     /// and receives/sends messages about the active torrent.
     pub async fn connect_to_peer(mut self) {
         if !self.send_handshake().await {
-            println!("failed to send handshake to peer, dropping.");
+            println!("[{}]: failed to send handshake, dropping.", self.address);
             self.update_peer_status(PeerStatus::Dropped);
             return;
         }
 
         if !self.send_message(Message::Bitfield { bitfield: Bitfield::from_pieces(self.completed_pieces.clone()) }).await {
-            println!("failed to send bitfield to peer, dropping.");
+            println!("[{}]: failed to send bitfield, dropping.", self.address);
             self.update_peer_status(PeerStatus::Dropped);
             return;
         }
@@ -190,7 +194,7 @@ impl TcpPeer {
                         self.waiting_for_block = true;
                     }
                     else {
-                        println!("failed to send request message to peer");
+                        println!("[{}]: failed to send request message to peer", self.address);
                         break;
                     }
                 }
@@ -206,7 +210,7 @@ impl TcpPeer {
                         let block_data = piece.data[block_start..block_end].to_vec();
     
                         assert!(block_data.len() == block_length);
-                        println!("sending piece data to {} (idx: {piece_idx}, offset: {block_start}, length: {block_length})", self.stream.peer_addr().unwrap());
+                        println!("[{}]: sending piece data to {} (idx: {piece_idx}, offset: {block_start}, length: {block_length})", self.address, self.stream.peer_addr().unwrap());
     
                         let message = Message::Piece {
                             piece_idx,
@@ -215,7 +219,7 @@ impl TcpPeer {
                         };
     
                         if !self.send_message(message).await {
-                            println!("failed to send piece message to peer");
+                            println!("[{}]: failed to send piece message to peer", self.address);
                             break;
                         }
                         else {
@@ -270,7 +274,7 @@ impl TcpPeer {
                             self.client_choking = true;
 
                             if !self.send_message(Message::Choke).await {
-                                println!("failed to send choke message to peer");
+                                println!("[{}]: failed to send choke message to peer", self.address);
                                 break;
                             }
                         }
@@ -279,7 +283,7 @@ impl TcpPeer {
                         let piece = piece as usize;
 
                         if piece >= self.available_pieces.len() {
-                            println!("peer sent have message for an invalid piece");
+                            println!("[{}]: peer sent have message for an invalid piece", self.address);
                             break;
                         }
                         
@@ -337,13 +341,13 @@ impl TcpPeer {
                             }
                             else {
                                 // Peer sent the wrong piece piece, drop.
-                                println!("peer sent the wrong piece");
+                                println!("[{}]: peer sent the wrong piece", self.address);
                                 break;
                             }
                         }
                         else {
                             // Peer sent an unsolicited piece, drop.
-                            println!("peer sent a piece we didn't request");
+                            println!("[{}]: peer sent a piece we didn't request", self.address);
                             break;
                         }
 
@@ -386,13 +390,13 @@ impl TcpPeer {
                     self.client_interested = true;
 
                     if self.client_choking && !self.send_message(Message::Unchoke).await {
-                        println!("failed to send unchoke message to peer");
+                        println!("[{}]: failed to send unchoke message to peer", self.address);
                         // Error sending message, drop.
                         return true;
                     }
 
                     if !self.client_interested && !self.send_message(Message::Interested).await {
-                        println!("failed to send interested message to peer");
+                        println!("[{}]: failed to send interested message to peer", self.address);
                         // Error sending message, drop.
                         return true;
                     }
