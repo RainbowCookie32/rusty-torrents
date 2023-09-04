@@ -539,7 +539,7 @@ impl TcpPeer {
         // Only send Available messages when we don't have a Piece already assigned.
         // This causes Engine to assign another and have the old Piece get stuck in limbo.
         if let PeerStatus::Available { .. } = &status {
-            if self.client_request.is_none() {
+            if self.client_request.is_none() && self.client_request_queue.is_empty() {
                 self.peer_status_tx.send(status)
                     .expect("Failed to communicate with Engine");
             }
