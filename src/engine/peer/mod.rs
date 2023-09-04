@@ -153,8 +153,11 @@ impl TcpPeer {
 
     /// Starts communication with the peer. Sends the handshake
     /// and receives/sends messages about the active torrent.
-    pub async fn connect_to_peer(mut self) {
-        self.establish_connection().await;
+    pub async fn run(mut self) {
+        if !self.establish_connection().await {
+            println!("[{}]: failed to establish connection, dropping.", self.address);
+            return;
+        }
 
         loop {
             if self.handle_engine_cmd().await {
