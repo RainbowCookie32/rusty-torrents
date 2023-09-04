@@ -139,11 +139,11 @@ impl Display for Message {
             Message::Unchoke => write!(f, "Unchoke"),
             Message::Interested => write!(f, "Interested"),
             Message::NotInterested => write!(f, "Not Interested"),
-            Message::Have {..} => write!(f, "Have"),
+            Message::Have { piece } => write!(f, "Have (piece: {piece})"),
             Message::Bitfield {..} => write!(f, "Bitfield"),
-            Message::Request {..} => write!(f, "Request"),
-            Message::Piece {..} => write!(f, "Piece"),
-            Message::Cancel {..} => write!(f, "Cancel")
+            Message::Request { piece_idx, block_offset, block_length } => write!(f, "Request (piece: {piece_idx}, offset: {block_offset}, length: {block_length})"),
+            Message::Piece { piece_idx, block_offset, block_data } => write!(f, "Piece (piece: {piece_idx}, offset: {block_offset}, length: {})", block_data.len()),
+            Message::Cancel { piece_idx, block_offset, block_length } => write!(f, "Cancel (piece: {piece_idx}, offset: {block_offset}, length: {block_length})")
         }
     }
 }
