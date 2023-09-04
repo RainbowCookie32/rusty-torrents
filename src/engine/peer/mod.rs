@@ -178,7 +178,7 @@ impl TcpPeer {
                 }
             }
 
-            if self.peer_request_pending && self.client_request.is_some() {
+            if self.peer_request_pending && self.peer_request.is_some() {
                 if !self.send_peer_request().await {
                     break;
                 }
