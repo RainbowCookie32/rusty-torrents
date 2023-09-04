@@ -404,12 +404,7 @@ impl TcpPeer {
                         self.client_request = pieces.pop();
                     }
 
-                    if self.client_request_queue.is_empty() {
-                        self.client_request_queue = pieces;
-                    }
-                    else {
-                        self.client_request_queue.append(&mut pieces);
-                    }
+                    self.client_request_queue.append(&mut pieces);
                 }
             }
         }
