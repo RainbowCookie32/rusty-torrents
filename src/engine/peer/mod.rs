@@ -154,19 +154,7 @@ impl TcpPeer {
     /// Starts communication with the peer. Sends the handshake
     /// and receives/sends messages about the active torrent.
     pub async fn connect_to_peer(mut self) {
-        if !self.send_handshake().await {
-            println!("[{}]: failed to send handshake, dropping.", self.address);
-            self.update_peer_status(PeerStatus::Dropped);
-            return;
-        }
-
-        if !self.send_message(Message::Bitfield { bitfield: Bitfield::from_pieces(self.completed_pieces.clone()) }).await {
-            println!("[{}]: failed to send bitfield, dropping.", self.address);
-            self.update_peer_status(PeerStatus::Dropped);
-            return;
-        }
-
-        self.update_peer_status(PeerStatus::Waiting);
+        self.establish_connection().await;
 
         loop {
             if self.handle_engine_cmd().await {
@@ -180,51 +168,15 @@ impl TcpPeer {
                 }
             }
 
-            if !self.waiting_for_block {
-                if let Some(piece) = self.client_request.as_ref() {
-                    let piece_idx = piece.idx as u32;
-                    let block_offset = piece.data.len() as u32;
-                    let block_length = (piece.size - piece.data.len()).min(16384) as u32;
-    
-                    let message = Message::Request { piece_idx, block_offset, block_length };
-    
-                    if self.send_message(message).await {
-                        self.update_peer_status(PeerStatus::Waiting);
-                        self.waiting_for_block = true;
-                    }
-                    else {
-                        println!("[{}]: failed to send request message to peer", self.address);
-                        break;
-                    }
+            if !self.waiting_for_block && self.client_request.is_some() {
+                if !self.send_client_request().await {
+                    break;
                 }
             }
 
-            if self.peer_request_pending {
-                if let Some(piece) = self.peer_request.as_ref() {
-                    if !piece.data.is_empty() {
-                        let piece_idx = piece.idx as u32;
-                        let block_length = piece.block_length as usize;
-                        let block_start = piece.block_offset as usize;
-                        let block_end = block_start + block_length;
-                        let block_data = piece.data[block_start..block_end].to_vec();
-    
-                        assert!(block_data.len() == block_length);
-                        println!("[{}]: sending piece data to {} (idx: {piece_idx}, offset: {block_start}, length: {block_length})", self.address, self.stream.peer_addr().unwrap());
-    
-                        let message = Message::Piece {
-                            piece_idx,
-                            block_offset: block_start as u32,
-                            block_data
-                        };
-    
-                        if !self.send_message(message).await {
-                            println!("[{}]: failed to send piece message to peer", self.address);
-                            break;
-                        }
-                        else {
-                            self.peer_request_pending = false;
-                        }
-                    }
+            if self.peer_request_pending && self.client_request.is_some() {
+                if !self.send_peer_request().await {
+                    break;
                 }
             }
 
@@ -238,123 +190,8 @@ impl TcpPeer {
                     }
                 }
 
-                match msg {
-                    Message::KeepAlive => {}
-                    Message::Choke => {
-                        self.peer_choking = true;
-                        self.update_peer_status(PeerStatus::Waiting);
-                    }
-                    Message::Unchoke => {
-                        // Some peers send a second Unchoke message after requesting a piece.
-                        // Only update status if we are actually chaging from Choked to Unchoked.
-                        if self.peer_choking {
-                            self.peer_choking = false;
-
-                            if !self.available_pieces.is_empty() {
-                                self.update_peer_status(PeerStatus::Available { available_pieces: self.available_pieces.clone() });
-                            }
-                        }
-                    }
-                    Message::Interested => {
-                        self.peer_interested = true;
-                        
-                        if self.client_choking {
-                            self.client_choking = false;
-                            
-                            if !self.send_message(Message::Unchoke).await {
-                                break;
-                            }
-                        }
-                    }
-                    Message::NotInterested => {
-                        self.peer_interested = false;
-
-                        if !self.client_choking {
-                            self.client_choking = true;
-
-                            if !self.send_message(Message::Choke).await {
-                                println!("[{}]: failed to send choke message to peer", self.address);
-                                break;
-                            }
-                        }
-                    }
-                    Message::Have { piece } => {
-                        let piece = piece as usize;
-
-                        if piece >= self.available_pieces.len() {
-                            println!("[{}]: peer sent have message for an invalid piece", self.address);
-                            break;
-                        }
-                        
-                        self.available_pieces[piece] = true;
-                    }
-                    Message::Bitfield { bitfield } => {
-                        self.available_pieces = bitfield.pieces;
-                    }
-                    Message::Request { piece_idx, block_offset, block_length } => {
-                        let piece_idx = piece_idx as usize;
-
-                        if let Some(piece) = self.peer_request.as_mut() {
-                            piece.block_offset = block_offset;
-                            piece.block_length = block_length;
-
-                            if piece.idx != piece_idx {
-                                piece.idx = piece_idx;
-                                
-                                piece.data = Vec::new();
-                                self.update_peer_status(PeerStatus::RequestedPiece { piece: piece_idx });
-                            }
-                        }
-                        else {
-                            let request = PieceRequest {
-                                idx: piece_idx,
-                                size: 0,
-                                data: Vec::new(),
-
-                                block_offset,
-                                block_length,
-                            };
-
-                            self.peer_request = Some(request);
-                            self.update_peer_status(PeerStatus::RequestedPiece { piece: piece_idx });
-                        }
-
-                        self.peer_request_pending = true;
-                    }
-                    Message::Piece { piece_idx, mut block_data, .. } => {
-                        if let Some(piece) = self.client_request.as_mut() {
-                            if piece_idx as usize == piece.idx {
-                                piece.data.append(&mut block_data);
-
-                                if piece.data.len() == piece.size {
-                                    self.complete_piece_data_tx.send((piece.idx, piece.data.clone()))
-                                        .expect("Failed to send Piece data to Engine")
-                                    ;
-
-                                    self.client_request = self.client_request_queue.pop();
-
-                                    if self.client_request.is_none() {
-                                        self.update_peer_status(PeerStatus::Available { available_pieces: self.available_pieces.clone() });
-                                    }
-                                }
-                            }
-                            else {
-                                // Peer sent the wrong piece piece, drop.
-                                println!("[{}]: peer sent the wrong piece", self.address);
-                                break;
-                            }
-                        }
-                        else {
-                            // Peer sent an unsolicited piece, drop.
-                            println!("[{}]: peer sent a piece we didn't request", self.address);
-                            break;
-                        }
-
-                        self.waiting_for_block = false;
-                    }
-                    Message::Cancel { .. } => {
-                        self.client_request = None;
-                    }
+                if !self.handle_peer_msg(msg).await {
+                    break;
                 }
             }
             else {
@@ -377,6 +214,146 @@ impl TcpPeer {
 
             self.send_message(message).await;
         }
+    }
+
+    async fn establish_connection(&mut self) -> bool {
+        if !self.send_handshake().await {
+            println!("[{}]: failed to send handshake, dropping.", self.address);
+            self.update_peer_status(PeerStatus::Dropped);
+            return false;
+        }
+
+        if !self.send_message(Message::Bitfield { bitfield: Bitfield::from_pieces(self.completed_pieces.clone()) }).await {
+            println!("[{}]: failed to send bitfield, dropping.", self.address);
+            self.update_peer_status(PeerStatus::Dropped);
+            return false;
+        }
+
+        self.update_peer_status(PeerStatus::Waiting);
+        true
+    }
+
+    async fn handle_peer_msg(&mut self, msg: Message) -> bool {
+        match msg {
+            Message::KeepAlive => {}
+            Message::Choke => {
+                self.peer_choking = true;
+                self.update_peer_status(PeerStatus::Waiting);
+            }
+            Message::Unchoke => {
+                // Some peers send a second Unchoke message after requesting a piece.
+                // Only update status if we are actually chaging from Choked to Unchoked.
+                if self.peer_choking {
+                    self.peer_choking = false;
+
+                    if !self.available_pieces.is_empty() {
+                        self.update_peer_status(PeerStatus::Available { available_pieces: self.available_pieces.clone() });
+                    }
+                }
+            }
+            Message::Interested => {
+                self.peer_interested = true;
+                
+                if self.client_choking {
+                    self.client_choking = false;
+                    
+                    if !self.send_message(Message::Unchoke).await {
+                        return false;
+                    }
+                }
+            }
+            Message::NotInterested => {
+                self.peer_interested = false;
+
+                if !self.client_choking {
+                    self.client_choking = true;
+
+                    if !self.send_message(Message::Choke).await {
+                        println!("[{}]: failed to send choke message to peer", self.address);
+                        return false;
+                    }
+                }
+            }
+            Message::Have { piece } => {
+                let piece = piece as usize;
+
+                if piece >= self.available_pieces.len() {
+                    println!("[{}]: peer sent have message for an invalid piece", self.address);
+                    return false;
+                }
+                
+                self.available_pieces[piece] = true;
+            }
+            Message::Bitfield { bitfield } => {
+                self.available_pieces = bitfield.pieces;
+            }
+            Message::Request { piece_idx, block_offset, block_length } => {
+                let piece_idx = piece_idx as usize;
+
+                if let Some(piece) = self.peer_request.as_mut() {
+                    piece.block_offset = block_offset;
+                    piece.block_length = block_length;
+
+                    if piece.idx != piece_idx {
+                        piece.idx = piece_idx;
+                        
+                        piece.data.clear();
+                        self.update_peer_status(PeerStatus::RequestedPiece { piece: piece_idx });
+                    }
+                }
+                else {
+                    let request = PieceRequest {
+                        idx: piece_idx,
+                        size: 0,
+                        data: Vec::new(),
+
+                        block_offset,
+                        block_length,
+                    };
+
+                    self.peer_request = Some(request);
+                    self.update_peer_status(PeerStatus::RequestedPiece { piece: piece_idx });
+                }
+
+                self.peer_request_pending = true;
+            }
+            Message::Piece { piece_idx, mut block_data, .. } => {
+                if let Some(piece) = self.client_request.as_mut() {
+                    if piece_idx as usize == piece.idx {
+                        piece.data.append(&mut block_data);
+
+                        if piece.data.len() == piece.size {
+                            self.complete_piece_data_tx.send((piece.idx, piece.data.clone()))
+                                .expect("Failed to send Piece data to Engine")
+                            ;
+
+                            self.client_request = self.client_request_queue.pop();
+
+                            if self.client_request.is_none() {
+                                self.update_peer_status(PeerStatus::Available { available_pieces: self.available_pieces.clone() });
+                            }
+                        }
+                    }
+                    else {
+                        // Peer sent the wrong piece piece, drop.
+                        println!("[{}]: peer sent the wrong piece", self.address);
+                        return false;
+                    }
+                }
+                else {
+                    // Peer sent an unsolicited piece, drop.
+                    println!("[{}]: peer sent a piece we didn't request", self.address);
+                    return false;
+                }
+
+                self.waiting_for_block = false;
+            }
+            Message::Cancel { .. } => {
+                self.client_request = None;
+            }
+        }
+
+        true
     }
 
     /// Handles commands sent by the engine, returns true if it should drop the peer.
@@ -482,12 +459,12 @@ impl TcpPeer {
         // then 8 reserved bytes (used for extension i think),
         handshake.resize(handshake.len() + 8, 0);
 
-        // and finally, the info hash.
+        // then the info hash,
         for info_hash_byte in self.info_hash.iter() {
             handshake.push(*info_hash_byte);
         }
 
-        // And finally, the peer id.
+        // and finally, the peer id.
         for peer_id_byte in PLACEHOLDER_ID.iter() {
             handshake.push(*peer_id_byte);
         }
@@ -514,6 +491,52 @@ impl TcpPeer {
             }
         }
         
+        false
+    }
+
+    async fn send_client_request(&mut self) -> bool {
+        let piece = self.client_request.as_ref().unwrap();
+
+        let piece_idx = piece.idx as u32;
+        let block_offset = piece.data.len() as u32;
+        let block_length = (piece.size - piece.data.len()).min(16384) as u32;
+    
+        let message = Message::Request { piece_idx, block_offset, block_length };
+    
+        if self.send_message(message).await {
+            self.update_peer_status(PeerStatus::Waiting);
+            self.waiting_for_block = true;
+
+            true
+        }
+        else {
+            println!("[{}]: failed to send request message to peer", self.address);
+            false
+        }
+    }
+
+    async fn send_peer_request(&mut self) -> bool {
+        let piece = self.peer_request.as_ref().unwrap();
+
+        if !piece.data.is_empty() {
+            let piece_idx = piece.idx as u32;
+            let block_length = piece.block_length as usize;
+            let block_start = piece.block_offset as usize;
+            let block_end = block_start + block_length;
+            let block_data = piece.data[block_start..block_end].to_vec();
+
+            assert!(block_data.len() == block_length);
+            println!("[{}]: sending piece data to {} (idx: {piece_idx}, offset: {block_start}, length: {block_length})", self.address, self.stream.peer_addr().unwrap());
+
+            let message = Message::Piece {
+                piece_idx,
+                block_offset: block_start as u32,
+                block_data
+            };
+
+            return self.send_message(message).await;
+        }
+
         false
     }
 
