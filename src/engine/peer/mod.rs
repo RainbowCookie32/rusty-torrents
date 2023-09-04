@@ -156,6 +156,7 @@ impl TcpPeer {
     pub async fn run(mut self) {
         if !self.establish_connection().await {
             println!("[{}]: failed to establish connection, dropping.", self.address);
+            self.update_peer_status(PeerStatus::Dropped);
             return;
         }
 
@@ -221,14 +222,10 @@ impl TcpPeer {
 
     async fn establish_connection(&mut self) -> bool {
         if !self.send_handshake().await {
-            println!("[{}]: failed to send handshake, dropping.", self.address);
-            self.update_peer_status(PeerStatus::Dropped);
             return false;
         }
 
         if !self.send_message(Message::Bitfield { bitfield: Bitfield::from_pieces(self.completed_pieces.clone()) }).await {
-            println!("[{}]: failed to send bitfield, dropping.", self.address);
-            self.update_peer_status(PeerStatus::Dropped);
             return false;
         }
 
