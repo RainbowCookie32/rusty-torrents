@@ -8,8 +8,7 @@ use sha1_smol::Sha1;
 use tokio::fs;
 use tokio::fs::File;
 use tokio::fs::OpenOptions;
-use tokio::io::AsyncReadExt;
-use tokio::io::{AsyncSeekExt, AsyncWriteExt};
+use tokio::io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt};
 
 use crate::bencode::ParsedTorrent;
 
@@ -28,7 +27,7 @@ pub struct Transfer {
     piece_length: u64,
 
     /// Handles for each file of the torrent.
-    files: Vec<File>,
+    files: Vec<(File, u64)>,
     
     left: u64,
     total_size: u64,
@@ -196,11 +195,10 @@ impl Transfer {
         let piece_file_i = self.pieces[piece].start_file;
         let piece_offset = self.pieces[piece].start_position;
 
-        let mut piece_file = &mut self.files[piece_file_i];
+        let (piece_file, file_size) = &mut self.files[piece_file_i];
 
-        let file_size = piece_file.metadata().await.unwrap().len();
         let buf_size = {
-            let remaining = file_size as usize - piece_offset;
+            let remaining = *file_size as usize - piece_offset;
 
             if remaining >= piece_length {
                 piece_length
@@ -224,7 +222,7 @@ impl Transfer {
                 let mut remaining_buf = vec![0; missing_bytes];
 
                 piece_buf.resize(read_bytes, 0);
-                piece_file = &mut self.files[piece_file_i as usize + 1];
+                let (piece_file, _) = &mut self.files[piece_file_i as usize + 1];
 
                 piece_file
                     .seek(SeekFrom::Start(0))
@@ -253,10 +251,9 @@ impl Transfer {
         let piece_file_i = self.pieces[piece].start_file as usize;
         let piece_offset = self.pieces[piece].start_position as usize;
         
-        let mut piece_file = &mut self.files[piece_file_i];
+        let (piece_file, file_size) = &mut self.files[piece_file_i];
 
-        let file_size = piece_file.metadata().await.unwrap().len();
-        let split_piece = piece_offset as usize + piece_length > file_size as usize;
+        let split_piece = piece_offset as usize + piece_length > *file_size as usize;
 
         piece_file
             .seek(SeekFrom::Start(piece_offset as u64))
@@ -267,13 +264,13 @@ impl Transfer {
         // FIXME: This code assumes a piece can only contain data for 2 files.
         // This assumption was made with 0 evidence to back it up.
         if split_piece {
-            let bytes_to_write = file_size as usize - piece_offset;
+            let bytes_to_write = *file_size as usize - piece_offset;
             let first_batch = &data[0..bytes_to_write];
             let second_batch = &data[bytes_to_write..];
 
             piece_file.write_all(first_batch).await.expect("failed to write piece");
 
-            piece_file = &mut self.files[piece_file_i + 1];
+            let (piece_file, _) = &mut self.files[piece_file_i + 1];
             
             piece_file
                 .seek(SeekFrom::Start(0))
@@ -288,7 +285,7 @@ impl Transfer {
         }
     }
 
-    async fn create_file(path: &Path, size: u64) -> File {
+    async fn create_file(path: &Path, size: u64) -> (File, u64) {
         fs::create_dir_all(path.parent().unwrap()).await
             .expect("Failed to create download dir")
         ;
@@ -316,16 +313,16 @@ impl Transfer {
                 .expect("Failed to extend file to size");
         }
 
-        file
+        (file, file_size)
     }
 
-    async fn calculate_pieces_info(files: &[File], piece_count: usize, piece_length: u64) -> Vec<TransferPiece> {
+    async fn calculate_pieces_info(files: &[(File, u64)], piece_count: usize, piece_length: u64) -> Vec<TransferPiece> {
         let mut pieces_info = Vec::with_capacity(piece_count);
 
         let mut file_idx = 0;
         let mut file_position = 0;
 
-        let mut file_metadata = files[0].metadata().await.unwrap();
+        let (_, mut file_size) = files[0];
 
         for i in 0..piece_count {
             let start_file = file_idx;
@@ -348,11 +345,13 @@ impl Transfer {
 
             file_position += piece_length as usize;
 
-            if file_position >= file_metadata.len() as usize && !is_last_piece {
+            if file_position >= file_size as usize && !is_last_piece {
                 file_idx += 1;
-                file_position -= file_metadata.len() as usize;
+                file_position -= file_size as usize;
+
+                let (_, next_file_size) = files[file_idx];
     
-                file_metadata = files[file_idx].metadata().await.unwrap();
+                file_size = next_file_size;
             }
         }
 
