@@ -78,39 +78,48 @@ impl Engine {
             }
 
             for (addr, control) in self.peers_controls.iter_mut() {
-                control.update_status();
+                control.update_state();
                 
                 match &control.status {
-                    PeerStatus::Connected { available_pieces } => {
-                        let is_relevant = self.transfer.get_piece_for_peer(available_pieces).is_some();
-
-                        if is_relevant {
-                            control.send_cmd(PeerCommand::SendInterested);
-                        }
-                    }
-                    PeerStatus::Available { available_pieces } => {
+                    PeerStatus::Ready => {
                         let mut pieces_idx = Vec::with_capacity(5);
                         let mut pieces = Vec::with_capacity(5);
-
-                        while let Some(piece) = self.transfer.get_piece_for_peer(available_pieces) {        
+    
+                        while let Some(piece) = self.transfer.get_piece_for_peer(&control.available_pieces) {        
                             piece.set_assigned(*addr);
                             pieces_idx.push(piece.idx());
                             pieces.push((piece.idx(), piece.length() as u64));
-
+    
                             if pieces.len() == 5 {
                                 break;
                             }
                         }
-
+    
                         if !pieces.is_empty() {
                             let printable_pieces: Vec<&usize> = pieces.iter().map(| (idx, _) | idx).collect();
                             println!("[{addr}]: assigned pieces {:?}", printable_pieces);
                             control.assign_pieces(pieces);
                         }
+                        else {
+                            control.send_cmd(PeerCommand::SendNotInterested);
+                        }
                     }
-                    PeerStatus::RequestedPiece { piece } => {
+                    PeerStatus::RequestedPiece(piece) => {
                         let data = self.transfer.read_piece(*piece).await;
                         control.send_cmd(PeerCommand::SendPiece { piece: *piece, data });
+                    }
+                    PeerStatus::ConnectionEstablished => {
+                        if !control.interested_sent {
+                            let is_relevant = self.transfer.get_piece_for_peer(&control.available_pieces).is_some();
+
+                            if is_relevant {
+                                control.interested_sent = true;
+                                control.send_cmd(PeerCommand::SendInterested);
+                            }
+                            else {
+                                continue;
+                            }
+                        }
                     }
                     _ => {}
                 }
@@ -192,17 +201,22 @@ impl Engine {
             let completed_pieces = self.transfer.pieces_status().clone();
 
             let (cmd_tx, cmd_rx) = mpsc::unbounded_channel();
-            let (peer_status_tx, peer_status_rx) = watch::channel(PeerStatus::Waiting);
+            let (peer_status_tx, status_rx) = watch::channel(PeerStatus::Busy);
+            let (available_pieces_tx, available_pieces_rx) = mpsc::unbounded_channel();
             
             let complete_piece_rx = self.complete_piece_tx.subscribe();
             let complete_piece_data_tx = self.peers_piece_data_tx.clone();
 
             let peer_control = PeerControl {
-                status: PeerStatus::Waiting,
+                status: PeerStatus::Busy,
                 assigned_pieces: Vec::with_capacity(5),
+                available_pieces: vec![false; self.transfer.piece_count()],
+
+                interested_sent: false,
 
                 cmd_tx,
-                status_rx: peer_status_rx
+                status_rx,
+                available_pieces_rx
             };
 
             self.peers_controls.insert(address, peer_control);
@@ -215,11 +229,12 @@ impl Engine {
                     cmd_rx,
                     peer_status_tx,
                     complete_piece_rx,
-                    complete_piece_data_tx
+                    complete_piece_data_tx,
+                    available_pieces_tx
                 ).await;
     
                 if let Some(peer) = new_peer {
-                    peer.connect_to_peer().await;
+                    peer.run().await;
                 }
             });
         }
@@ -230,7 +245,7 @@ impl Engine {
     fn purge_peers_list(&mut self) {
         let peers_to_remove: Vec<SocketAddr> = self.peers_controls
             .iter()
-            .filter(| (_, v) | v.cmd_tx.is_closed() || v.status == PeerStatus::Dropped)
+            .filter(| (_, v) | v.cmd_tx.is_closed() || v.status == PeerStatus::Disconnected)
             .map(| (k, _) | (*k))
             .collect()
         ;
@@ -250,16 +265,20 @@ impl Engine {
 pub struct PeerControl {
     status: PeerStatus,
     assigned_pieces: Vec<(usize, u64)>,
+    available_pieces: Vec<bool>,
+
+    interested_sent: bool,
     
     cmd_tx: mpsc::UnboundedSender<PeerCommand>,
     status_rx: watch::Receiver<PeerStatus>,
+    available_pieces_rx: mpsc::UnboundedReceiver<Vec<bool>>,
 }
 
 impl PeerControl {
     fn send_cmd(&mut self, cmd: PeerCommand) {
         if self.cmd_tx.send(cmd).is_err() {
             println!("failed to send cmd to peer, dropping...");
-            self.status = PeerStatus::Dropped;
+            self.status = PeerStatus::Disconnected;
         }
     }
 
@@ -273,7 +292,7 @@ impl PeerControl {
         self.send_cmd(PeerCommand::RequestPiece { pieces });
     }
 
-    fn update_status(&mut self) {
+    fn update_state(&mut self) {
         match self.status_rx.has_changed() {
             Ok(has_changed) => {
                 if has_changed {
@@ -281,8 +300,13 @@ impl PeerControl {
                 }
             }
             Err(_) => {
-                self.status = PeerStatus::Dropped;
+                self.status = PeerStatus::Disconnected;
+                return;
             }
+        }
+
+        if let Ok(pieces) = self.available_pieces_rx.try_recv() {
+            self.available_pieces = pieces;
         }
     }
 }

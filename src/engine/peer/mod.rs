@@ -16,9 +16,13 @@ type CmdRx = mpsc::UnboundedReceiver<PeerCommand>;
 type StatusTx = watch::Sender<PeerStatus>;
 type PieceRx = broadcast::Receiver<usize>;
 type PieceDataTx = mpsc::UnboundedSender<(usize, Vec<u8>)>;
+type AvailablePiecesTx = mpsc::UnboundedSender<Vec<bool>>;
 
 const PROTOCOL: [u8; 19] = *b"BitTorrent protocol";
 const PLACEHOLDER_ID: [u8; 20] = *b"00000000000000000000";
+
+// This can slow everything down a fair bit, but it's useful for debugging.
+const LOG_ALL_MESSAGES: bool = false;
 
 struct PieceRequest {
     idx: usize,
@@ -31,23 +35,25 @@ struct PieceRequest {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum PeerStatus {
-    /// Waiting for the peer to reply to a message or unchoke us.
-    Waiting,
-    /// The peer was dropped. This can be caused by the peer sending bad data,
-    /// or being unresponsive/choked for too long.
-    Dropped,
-    /// Connected successfully to the peer and got Bitfield, but waiting for Unchoke.
-    Connected { available_pieces: Vec<bool> },
-    /// Peer unchoked us.
-    Available { available_pieces: Vec<bool> },
-    /// Peer requested a Piece.
-    RequestedPiece { piece: usize }
+    /// Waiting for Unchoke/still has pieces on queue to request.
+    Busy,
+    /// Ready to request pieces from the peer.
+    /// Signals the engine it can assign pieces to this peer.
+    Ready,
+    /// The peer was disconnected for whatever reason.
+    Disconnected,
+    /// The peer requested a piece from us.
+    RequestedPiece(usize),
+    /// Handshakes and Bitfields were exchanged.
+    /// The engine can evaluate whether the peer is relevant.
+    ConnectionEstablished,
 }
 
 #[derive(Debug)]
 pub enum PeerCommand {
     Disconnect,
     SendInterested,
+    SendNotInterested,
 
     SendPiece { piece: usize, data: Vec<u8> },
     RequestPiece { pieces: Vec<(usize, u64)> }
@@ -89,19 +95,23 @@ pub struct TcpPeer {
 
     /// Gets commands from the Engine, like Piece requests,
     /// or disconnects.
-    cmd_rx: mpsc::UnboundedReceiver<PeerCommand>,
+    cmd_rx: CmdRx,
     /// Sends info about the Peer's status to the Engine for work coordination.
     /// This updates are connection and choke state, and available pieces.
-    peer_status_tx: watch::Sender<PeerStatus>,
+    peer_status_tx: StatusTx,
 
     /// Receives info about completed pieces from the Engine.
-    complete_piece_rx: broadcast::Receiver<usize>,
+    complete_piece_rx: PieceRx,
     /// Sends the index and data of a complete Piece back to the Engine
     /// for checking and writing.
-    complete_piece_data_tx: mpsc::UnboundedSender<(usize, Vec<u8>)>,
+    complete_piece_data_tx: PieceDataTx,
+    /// Sends info to the engine about pieces available from this peer.
+    available_pieces_tx: AvailablePiecesTx,
 
-    /// true if we sent a request message and are waiting for the reply.
-    waiting_for_block: bool,
+    /// true if we sent a message and are waiting for the reply.
+    waiting_for_message: bool,
+    /// true if we are waiting for a piece message specifically.
+    waiting_for_piece_data: bool,
 }
 
 impl TcpPeer {
@@ -114,7 +124,8 @@ impl TcpPeer {
         cmd_rx: CmdRx,
         peer_status_tx: StatusTx,
         complete_piece_rx: PieceRx,
-        complete_piece_data_tx: PieceDataTx
+        complete_piece_data_tx: PieceDataTx,
+        available_pieces_tx: AvailablePiecesTx
     ) -> Option<TcpPeer> {
         let stream = TcpStream::connect(&address).await.ok()?;
 
@@ -145,8 +156,10 @@ impl TcpPeer {
     
                 complete_piece_rx,
                 complete_piece_data_tx,
+                available_pieces_tx,
     
-                waiting_for_block: false,
+                waiting_for_message: false,
+                waiting_for_piece_data: false,
             }
         )
     }
@@ -156,15 +169,20 @@ impl TcpPeer {
     pub async fn run(mut self) {
         if !self.establish_connection().await {
             println!("[{}]: failed to establish connection, dropping.", self.address);
-            self.update_peer_status(PeerStatus::Dropped);
+            self.update_peer_status(PeerStatus::Disconnected);
             return;
+        }
+        else {
+            println!("[{}]: Connection established!", self.address);
         }
 
         loop {
+            // Check if engine sent any commands and handle them.
             if self.handle_engine_cmd().await {
                 break;
             }
 
+            // Notify the peer if we have any new pieces.
             if let Ok(piece) = self.complete_piece_rx.try_recv() {
                 if !self.send_message(Message::Have { piece: piece as u32 }).await {
                     // Error sending message, drop.
@@ -172,10 +190,12 @@ impl TcpPeer {
                 }
             }
 
-            if !self.waiting_for_block && self.client_request.is_some() {
-                if !self.send_client_request().await {
-                    break;
-                }
+            if self.client_interested && self.peer_choking {
+                self.waiting_for_message = true;
+            }
+
+            if self.client_interested && !self.peer_choking && self.client_request.is_none() && self.client_request_queue.is_empty() {
+                self.update_peer_status(PeerStatus::Ready);
             }
 
             if self.peer_request_pending && self.peer_request.is_some() {
@@ -184,26 +204,28 @@ impl TcpPeer {
                 }
             }
 
-            if let Some(msg) = self.get_message().await {
-                if self.client_request.is_none() {
-                    if self.peer_choking {
-                        self.update_peer_status(PeerStatus::Connected { available_pieces: self.available_pieces.clone() });
+            if self.waiting_for_message || self.waiting_for_piece_data {
+                if let Some(msg) = self.get_message().await {
+                    if !self.handle_peer_msg(msg).await {
+                        break;
                     }
-                    else {
-                        self.update_peer_status(PeerStatus::Available { available_pieces: self.available_pieces.clone() });
-                    }
-                }
-
-                if !self.handle_peer_msg(msg).await {
-                    break;
+    
+                    self.waiting_for_message = false;
                 }
             }
             else {
+                // Send a Piece request if we have one pending.
+                if !self.peer_choking && self.client_request.is_some() && !self.waiting_for_piece_data {
+                    if !self.send_client_request().await {
+                        break;
+                    }
+                }
+
                 time::sleep(Duration::from_millis(5)).await;
             }
         }
 
-        self.update_peer_status(PeerStatus::Dropped);
+        self.update_peer_status(PeerStatus::Disconnected);
 
         if let Some(piece) = self.client_request.take() {
             let piece_idx = piece.idx as u32;
@@ -229,7 +251,7 @@ impl TcpPeer {
             return false;
         }
 
-        self.update_peer_status(PeerStatus::Waiting);
+        self.waiting_for_message = true;
         true
     }
 
@@ -238,7 +260,7 @@ impl TcpPeer {
             Message::KeepAlive => {}
             Message::Choke => {
                 self.peer_choking = true;
-                self.update_peer_status(PeerStatus::Waiting);
+                self.update_peer_status(PeerStatus::Busy);
             }
             Message::Unchoke => {
                 // Some peers send a second Unchoke message after requesting a piece.
@@ -247,7 +269,7 @@ impl TcpPeer {
                     self.peer_choking = false;
 
                     if !self.available_pieces.is_empty() {
-                        self.update_peer_status(PeerStatus::Available { available_pieces: self.available_pieces.clone() });
+                        self.update_peer_status(PeerStatus::Ready);
                     }
                 }
             }
@@ -264,15 +286,6 @@ impl TcpPeer {
             }
             Message::NotInterested => {
                 self.peer_interested = false;
-
-                if !self.client_choking {
-                    self.client_choking = true;
-
-                    if !self.send_message(Message::Choke).await {
-                        println!("[{}]: failed to send choke message to peer", self.address);
-                        return false;
-                    }
-                }
             }
             Message::Have { piece } => {
                 let piece = piece as usize;
@@ -283,9 +296,12 @@ impl TcpPeer {
                 }
                 
                 self.available_pieces[piece] = true;
+                self.update_peer_pieces();
             }
             Message::Bitfield { bitfield } => {
                 self.available_pieces = bitfield.pieces;
+                self.update_peer_pieces();
+                self.update_peer_status(PeerStatus::ConnectionEstablished);
             }
             Message::Request { piece_idx, block_offset, block_length } => {
                 let piece_idx = piece_idx as usize;
@@ -298,7 +314,6 @@ impl TcpPeer {
                         piece.idx = piece_idx;
                         
                         piece.data.clear();
-                        self.update_peer_status(PeerStatus::RequestedPiece { piece: piece_idx });
                     }
                 }
                 else {
@@ -312,10 +327,10 @@ impl TcpPeer {
                     };
 
                     self.peer_request = Some(request);
-                    self.update_peer_status(PeerStatus::RequestedPiece { piece: piece_idx });
                 }
 
                 self.peer_request_pending = true;
+                self.update_peer_status(PeerStatus::RequestedPiece(piece_idx));
             }
             Message::Piece { piece_idx, mut block_data, .. } => {
                 if let Some(piece) = self.client_request.as_mut() {
@@ -323,20 +338,18 @@ impl TcpPeer {
                         piece.data.append(&mut block_data);
 
                         if piece.data.len() == piece.size {
+                            println!("[{}]: completed piece {piece_idx}", self.address);
+
                             self.complete_piece_data_tx.send((piece.idx, piece.data.clone()))
                                 .expect("Failed to send Piece data to Engine")
                             ;
 
                             self.client_request = self.client_request_queue.pop();
-
-                            if self.client_request.is_none() {
-                                self.update_peer_status(PeerStatus::Available { available_pieces: self.available_pieces.clone() });
-                            }
                         }
                     }
                     else {
                         // Peer sent the wrong piece piece, drop.
-                        println!("[{}]: peer sent the wrong piece", self.address);
+                        println!("[{}]: peer sent the wrong piece (requested {}, received {piece_idx})", self.address, piece.idx);
                         return false;
                     }
                 }
@@ -346,7 +359,7 @@ impl TcpPeer {
                     return false;
                 }
 
-                self.waiting_for_block = false;
+                self.waiting_for_piece_data = false;
             }
             Message::Cancel { .. } => {
                 self.client_request = None;
@@ -362,17 +375,25 @@ impl TcpPeer {
             match cmd {
                 PeerCommand::Disconnect => return true,
                 PeerCommand::SendInterested => {
-                    self.client_choking = false;
-                    self.client_interested = true;
-
                     if self.client_choking && !self.send_message(Message::Unchoke).await {
                         println!("[{}]: failed to send unchoke message to peer", self.address);
                         // Error sending message, drop.
                         return true;
                     }
 
+                    self.client_choking = false;
+
                     if !self.client_interested && !self.send_message(Message::Interested).await {
                         println!("[{}]: failed to send interested message to peer", self.address);
+                        // Error sending message, drop.
+                        return true;
+                    }
+
+                    self.client_interested = true;
+                }
+                PeerCommand::SendNotInterested => {
+                    if !self.send_message(Message::NotInterested).await {
+                        println!("[{}]: failed to send not interested message to peer", self.address);
                         // Error sending message, drop.
                         return true;
                     }
@@ -381,12 +402,13 @@ impl TcpPeer {
                     if let Some(request) = self.peer_request.as_mut() {
                         if request.idx == piece {
                             request.data = data;
-                            self.update_peer_status(PeerStatus::Waiting);
+                            self.update_peer_status(PeerStatus::Busy);
                         }
                     }
                 }
                 PeerCommand::RequestPiece{ pieces } => {
                     let mut pieces = pieces.into_iter()
+                        .rev()
                         .map(| (piece, length) | {
                             PieceRequest {
                                 idx: piece,
@@ -417,17 +439,28 @@ impl TcpPeer {
         let mut message = None;
         let mut length_buf = vec![0; 4];
 
-        let read_bytes = self.stream.try_read(&mut length_buf).ok()?;
+        let read_bytes = self.stream.read(&mut length_buf).await.ok()?;
 
         if read_bytes == 4 {
             let msg_length = length_buf.as_slice().get_u32() as usize;
+
+            if msg_length > 65535 {
+                return None;
+            }
+
             let mut msg_buf = vec![0; msg_length];
 
             let read_bytes = self.stream.read_exact(&mut msg_buf).await.ok()?;
 
             if read_bytes == msg_length {
                 let msg_buf = Bytes::from(msg_buf);
-                message = Some(msg_buf.into());
+                let msg = msg_buf.into();
+
+                if LOG_ALL_MESSAGES {
+                    println!("[{}]: Received message {msg}", self.address);
+                }
+
+                message = Some(msg);
             }
         }
 
@@ -437,8 +470,18 @@ impl TcpPeer {
     /// Try to send a message through the TcpStream. Returns false
     /// if the message couldn't be sent.
     async fn send_message(&mut self, message: Message) -> bool {
+        if LOG_ALL_MESSAGES {
+            println!("[{}]: Sent message {message}", self.address);
+        }
+
         let msg_buf: Bytes = message.into();
-        self.stream.write_all(&msg_buf).await.is_ok()
+        match self.stream.write_all(&msg_buf).await {
+            Ok(_) => true,
+            Err(e) => {
+                println!("error sending message: {e}");
+                false
+            }
+        }
     }
 
     async fn send_handshake(&mut self) -> bool {
@@ -464,25 +507,12 @@ impl TcpPeer {
             handshake.push(*peer_id_byte);
         }
 
-        self.update_peer_status(PeerStatus::Waiting);
-
-        let send_timeout = time::timeout(
-            Duration::from_secs(5),
-            self.stream.write_all(&handshake)
-        ).await;
-
-        if send_timeout.is_ok() {
+        if self.stream.write_all(&handshake).await.is_ok() {
             let mut response_buf = vec![0; 68];
-            let receive_timeout = time::timeout(
-                Duration::from_secs(5),
-                self.stream.read(&mut response_buf)
-            ).await;
 
-            if let Ok(timeout_result) = receive_timeout {
-                if let Ok(bytes_read) = timeout_result {
-                    // TODO: Should probably check peer id and info hash.
-                    return bytes_read == response_buf.len();
-                }
+            if let Ok(bytes_read) = self.stream.read(&mut response_buf).await {
+                // TODO: Actually check the handshake.
+                return bytes_read == response_buf.len();
             }
         }
         
@@ -497,11 +527,10 @@ impl TcpPeer {
         let block_length = (piece.size - piece.data.len()).min(16384) as u32;
     
         let message = Message::Request { piece_idx, block_offset, block_length };
+        self.update_peer_status(PeerStatus::Busy);
     
         if self.send_message(message).await {
-            self.update_peer_status(PeerStatus::Waiting);
-            self.waiting_for_block = true;
-
+            self.waiting_for_piece_data = true;
             true
         }
         else {
@@ -535,11 +564,14 @@ impl TcpPeer {
         false
     }
 
+    fn update_peer_pieces(&mut self) {
+        self.available_pieces_tx.send(self.available_pieces.clone())
+            .expect("Failed to send available_pieces to engine");
+    }
+
     fn update_peer_status(&mut self, status: PeerStatus) {
-        // Only send Available messages when we don't have a Piece already assigned.
-        // This causes Engine to assign another and have the old Piece get stuck in limbo.
-        if let PeerStatus::Available { .. } = &status {
-            if self.client_request.is_none() && self.client_request_queue.is_empty() {
+        if status == PeerStatus::Ready {
+            if self.client_request_queue.is_empty() {
                 self.peer_status_tx.send(status)
                     .expect("Failed to communicate with Engine");
             }
