@@ -83,6 +83,10 @@ impl Transfer {
         self.info_hash.clone()
     }
 
+    pub fn piece_count(&self) -> usize {
+        self.pieces.len()
+    }
+
     pub fn pieces_status(&self) -> Vec<bool> {
         self.pieces
             .iter()
