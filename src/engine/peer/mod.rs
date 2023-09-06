@@ -485,34 +485,44 @@ impl TcpPeer {
     }
 
     async fn send_handshake(&mut self) -> bool {
-        let mut handshake = Vec::with_capacity(68);
-        handshake.push(19);
-
-        // First 20 bytes of the handshake are used by the
-        // length-prefixed "BitTorrent protocol" string,
-        for protocol_byte in PROTOCOL.iter() {
-            handshake.push(*protocol_byte);
-        }
-
-        // then 8 reserved bytes (used for extension i think),
-        handshake.resize(handshake.len() + 8, 0);
-
-        // then the info hash,
-        for info_hash_byte in self.info_hash.iter() {
-            handshake.push(*info_hash_byte);
-        }
-
-        // and finally, the peer id.
-        for peer_id_byte in PLACEHOLDER_ID.iter() {
-            handshake.push(*peer_id_byte);
-        }
+        let mut handshake = BytesMut::with_capacity(68);
+        
+        // Length prefix of "BitTorrent protocol" string.
+        handshake.put_u8(19);
+        // The aforementioned string.
+        handshake.put_slice(&PROTOCOL);
+        // 8 reserved bytes, used for extensions.
+        // TODO: Start implementing extensions, they have cool stuff.
+        handshake.put_u64(0);
+        // The torrent's info hash.
+        handshake.put_slice(self.info_hash.as_ref());
+        // Our peer id.
+        handshake.put_slice(&PLACEHOLDER_ID);
 
         if self.stream.write_all(&handshake).await.is_ok() {
             let mut response_buf = vec![0; 68];
 
             if let Ok(bytes_read) = self.stream.read(&mut response_buf).await {
-                // TODO: Actually check the handshake.
-                return bytes_read == response_buf.len();
+                // Didn't get a complete handshake, yeet.
+                if bytes_read != response_buf.len() {
+                    return false;
+                }
+
+                let mut response_bytes = Bytes::from(response_buf);
+
+                // Sanity check for the length prefix.
+                if response_bytes.get_u8() != 19 {
+                    return false;
+                }
+
+                // Skip the string, too lazy.
+                response_bytes.advance(19);
+
+                // The reserved bytes for extensions.
+                // TODO: Check them and do stuff.
+                let _reserved_bytes = response_bytes.get_u64();
+                
+                return true;
             }
         }
         
