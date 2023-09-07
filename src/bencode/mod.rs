@@ -1,203 +1,223 @@
+use std::io::{Cursor, Read};
 use std::collections::HashMap;
 
-#[derive(Debug, Clone)]
+const D_CHAR: u8 = 100;
+const E_CHAR: u8 = 101;
+const I_CHAR: u8 = 105;
+const L_CHAR: u8 = 108;
+const SEMICOLON_CHAR: u8 = 58;
+
+#[derive(Clone, Debug)]
 pub enum BEncodeType {
     Int { value: i64 },
-    String { value: String, bytes: Vec<u8> },
-
-    List { entries: Vec<BEncodeType> },
-    Dictionary { entries: HashMap<String, BEncodeType>, hash: [u8; 20], hash_string: String }
+    List { value: Vec<BEncodeType> },
+    String { value: String, value_bytes: Vec<u8> },
+    Dictionary { value: HashMap<String, BEncodeType>, value_hash: [u8; 20], value_hash_str: String }
 }
 
 impl BEncodeType {
-    pub fn string(data: &[u8], position: &mut usize) -> BEncodeType {
-        let (value, bytes) = BEncodeType::parse_string(data, position);
+    pub fn parse_type(cursor: &mut Cursor<&[u8]>) -> BEncodeType {
+        let value_byte = {
+            let mut buf = vec![0];
+            cursor.read_exact(&mut buf).expect("failed to read from cursor");
 
-        BEncodeType::String { value, bytes }
-    }
-
-    fn parse_string(data: &[u8], position: &mut usize) -> (String, Vec<u8>) {
-        let string_length = {
-            let mut string_data = String::new();
-
-            loop {
-                let value = data[*position] as char;
-                
-                *position += 1;
-
-                if value != ':' {
-                    string_data.push(value);
-                }
-                else {
-                    break;
-                }
-            }
-
-            string_data.parse().expect("Bad string length.")
+            buf[0]
         };
 
-        let mut result = String::with_capacity(string_length);
-        let mut result_bytes = Vec::new();
-
-        for offset in 0..string_length {
-            result.push(data[*position + offset] as char);
-            result_bytes.push(data[*position + offset]);
+        match value_byte {
+            D_CHAR => BEncodeType::dictionary(cursor),
+            L_CHAR => BEncodeType::list(cursor),
+            I_CHAR => BEncodeType::integer(cursor),
+            _ => {
+                cursor.set_position(cursor.position() - 1);
+                BEncodeType::string(cursor)
+            }
         }
-
-        *position += string_length;
-
-        (result, result_bytes)
     }
 
-    pub fn integer(data: &[u8], position: &mut usize) -> BEncodeType {
-        let mut result = String::new();
+    fn string(cursor: &mut Cursor<&[u8]>) -> BEncodeType {
+        let (value, value_bytes) = {
+            let mut sb_buf = vec![0];
+
+            let length_str = {
+                let mut length_buf = Vec::with_capacity(2);
+    
+                loop {
+                    let value = {
+                        cursor.read_exact(&mut sb_buf).expect("failed to read from cursor");
+                        sb_buf[0]
+                    };
+    
+                    if value != SEMICOLON_CHAR {
+                        length_buf.push(value);
+                    }
+                    else {
+                        break;
+                    }
+                }
+                
+                String::from_utf8(length_buf)
+                    .expect("Failed to parse bencoded int as string")
+                    .parse()
+                    .expect("Bad string length.")
+            };
+    
+            let mut result_bytes = vec![0; length_str];
+            cursor.read_exact(&mut result_bytes).expect("failed to read from cursor");
+    
+            (String::from_utf8(result_bytes.clone()).unwrap_or_default(), result_bytes)
+        };
+
+        BEncodeType::String { value, value_bytes }
+    }
+
+    fn integer(cursor: &mut Cursor<&[u8]>) -> BEncodeType {
+        let mut sb_buf = vec![0];
+        let mut result_buf = Vec::with_capacity(2);
 
         loop {
-            let byte = data[*position] as char;
+            let byte = {
+                cursor.read_exact(&mut sb_buf).expect("failed to read from cursor");
+                sb_buf[0]
+            };
 
-            *position += 1;
-
-            if byte != 'e' {
-                result.push(byte);
+            if byte != E_CHAR {
+                result_buf.push(byte);
             }
             else {
                 break;
             }
         }
 
-        let value = result.parse().expect("Bad int length.");
+        let result_str = String::from_utf8(result_buf)
+            .expect("Failed to parse bencoded int as string")
+        ;
 
-        BEncodeType::Int { value }
+        // TODO: Fail gracefully.
+        BEncodeType::Int { value: result_str.parse().expect("failed to parse int value") }
     }
 
-    pub fn list(data: &[u8], position: &mut usize) -> BEncodeType {
-        let mut entries = Vec::new();
+    fn list(cursor: &mut Cursor<&[u8]>) -> BEncodeType {
+        let mut sb_buf = vec![0];
+        let mut value = Vec::new();
 
         loop {
-            let value_byte = data[*position] as char;
-
-            *position += 1;
-
-            let value = match value_byte {
-                'd' => BEncodeType::dictionary(data, position),
-                'l' => BEncodeType::list(data, position),
-                'i' => BEncodeType::integer(data, position),
-                _ => {
-
-                    *position -= 1;
-                    BEncodeType::string(data, position)
-                }
+            let byte = {
+                cursor.read_exact(&mut sb_buf).expect("failed to read from cursor");
+                sb_buf[0]
             };
 
-            entries.push(value);
-
-            if data[*position] as char == 'e' {
-                *position += 1;
+            if byte != E_CHAR {
+                cursor.set_position(cursor.position() - 1);
+                value.push(BEncodeType::parse_type(cursor));
+            }
+            else {
                 break;
             }
         }
 
-        BEncodeType::List { entries }
+        BEncodeType::List { value }
     }
 
-    pub fn dictionary(data: &[u8], position: &mut usize) -> BEncodeType {
-        let start = *position as u16;
+    fn dictionary(cursor: &mut Cursor<&[u8]>) -> BEncodeType {
+        let mut sb_buf = vec![0];
+        let mut bytes = Vec::new();
         let mut entries = HashMap::new();
 
+        let end_position: usize;
+        let start_position = cursor.position() as usize - 1;
+
         loop {
-            let (key, _) = BEncodeType::parse_string(data, position);
-
-            let value_byte = data[*position] as char;
-
-            *position += 1;
-
-            let value = match value_byte {
-                'd' => BEncodeType::dictionary(data, position),
-                'l' => BEncodeType::list(data, position),
-                'i' => BEncodeType::integer(data, position),
-                _ => {
-                    *position -= 1;
-                    BEncodeType::string(data, position)
-                }
+            let byte = {
+                cursor.read_exact(&mut sb_buf).expect("failed to read from cursor");
+                sb_buf[0]
             };
 
-            entries.insert(key, value);
-
-            if data[*position] as char == 'e' {
-                *position += 1;
+            if byte != E_CHAR {
+                bytes.push(byte);
+                cursor.set_position(cursor.position() - 1);
+                
+                let key = BEncodeType::string(cursor).as_string();
+                entries.insert(key, BEncodeType::parse_type(cursor));
+            }
+            else {
+                end_position = cursor.position() as usize;
                 break;
             }
         }
 
-        let dictionary_bytes = &data[start as usize - 1..*position];
-        let dictionary_sha1 = sha1_smol::Sha1::from(dictionary_bytes);
+        let dictionary_hash = sha1_smol::Sha1::from(&cursor.get_ref()[start_position..end_position]);
+        let dictionary_hash_bytes = dictionary_hash.digest().bytes();
 
-        let hash = dictionary_sha1.digest().bytes();
-        let hash_string = dictionary_sha1.hexdigest();
-
-        BEncodeType::Dictionary { entries, hash, hash_string }
+        BEncodeType::Dictionary { value: entries, value_hash: dictionary_hash_bytes, value_hash_str: dictionary_hash.hexdigest() }
     }
 
-    pub fn get_int(&self) -> i64 {
-        if let BEncodeType::Int { value } = self {
-            *value
-        }
-        else {
-            i64::MAX
-        }
-    }
-
-    pub fn get_string(&self) -> String {
-        if let BEncodeType::String { value, ..} = self {
+    pub fn as_dictionary(&self) -> HashMap<String, BEncodeType> {
+        if let BEncodeType::Dictionary { value, .. } = self {
             value.clone()
         }
         else {
-            String::new()
-        }
-    }
-
-    pub fn get_string_bytes(&self) -> Vec<u8> {
-        if let BEncodeType::String { bytes, ..} = self {
-            bytes.clone()
-        }
-        else {
-            Vec::new()
-        }
-    }
-
-    pub fn get_list(&self) -> Vec<BEncodeType> {
-        if let BEncodeType::List { entries } = self {
-            entries.clone()
-        }
-        else {
-            Vec::new()
-        }
-    }
-
-    pub fn get_dictionary(&self) -> HashMap<String, BEncodeType> {
-        if let BEncodeType::Dictionary { entries, .. } = self {
-            entries.clone()
-        }
-        else {
+            println!("as_dictionary called on a BEncodeType value that wasn't a dictionary!");
             HashMap::new()
         }
     }
 
-    pub fn get_dictionary_hash(&self) -> [u8; 20] {
-        if let BEncodeType::Dictionary { hash, ..} = self {
-            *hash
+    pub fn as_dictionary_hash(&self) -> [u8; 20] {
+        if let BEncodeType::Dictionary { value_hash, .. } = self {
+            value_hash.clone()
         }
         else {
-            [0; 20]
+            panic!("as_dictionary_hash called on a BEncodeType value that wasn't a dictionary!");
         }
     }
 
-    pub fn get_dictionary_hash_string(&self) -> String {
-        if let BEncodeType::Dictionary { hash_string, ..} = self {
-            hash_string.clone()
+    pub fn as_dictionary_hash_str(&self) -> String {
+        if let BEncodeType::Dictionary { value_hash_str, .. } = self {
+            value_hash_str.clone()
         }
         else {
+            println!("as_dictionary_hash_str called on a BEncodeType value that wasn't a dictionary!");
             String::new()
+        }
+    }
+
+    pub fn as_string(&self) -> String {
+        if let BEncodeType::String { value, ..} = self {
+            value.clone()
+        }
+        else {
+            println!("as_string called on a BEncodeType value that wasn't a string! {:#?}", self);
+            String::new()
+        }
+    }
+
+    pub fn as_string_bytes(&self) -> Vec<u8> {
+        if let BEncodeType::String { value_bytes, ..} = self {
+            value_bytes.clone()
+        }
+        else {
+            println!("as_string_bytes called on a BEncodeType value that wasn't a string!");
+            Vec::new()
+        }
+    }
+
+    pub fn as_list(&self) -> Vec<BEncodeType> {
+        if let BEncodeType::List { value } = self {
+            value.clone()
+        }
+        else {
+            println!("as_list called on a BEncodeType value that wasn't a list!");
+            Vec::new()
+        }
+    }
+
+    pub fn as_integer(&self) -> i64 {
+        if let BEncodeType::Int { value } = self {
+            *value
+        }
+        else {
+            println!("as_integer called on a BEncodeType value that wasn't an integer!");
+            0
         }
     }
 }
@@ -205,75 +225,54 @@ impl BEncodeType {
 pub struct ParsedTorrent {
     announce: String,
     announce_list: Vec<String>,
-    creation_date: String,
     
     info: TorrentInfo
 }
 
 impl ParsedTorrent {
     pub fn new(data: Vec<u8>) -> ParsedTorrent {
-        let mut position = 0;
-        let value_byte = data[position] as char;
-    
-        position += 1;
-    
-        if value_byte == 'd' {
-            let entries = BEncodeType::dictionary(&data, &mut position).get_dictionary();
+        let mut data = Cursor::new(data.as_ref());
+        let entries = BEncodeType::parse_type(&mut data).as_dictionary();
 
-            let announce = {
-                if let Some(entry) = entries.get("announce") {
-                    entry.get_string()
-                }
-                else {
-                    String::new()
-                }
-            };
-        
-            let announce_list = {
-                if let Some(entry) = entries.get("announce-list") {
-                    let list = entry.get_list();
-
-                    list
-                        .iter()
-                        .map(| tracker_list | {
-                            tracker_list.get_list()[0].clone()
-                        })
-                        .map(| tracker | tracker.get_string())
-                        .collect()
-                }
-                else {
-                    Vec::new()
-                }
-            };
-        
-            let creation_date = {
-                if let Some(entry) = entries.get("creation date") {
-                    entry.get_string()
-                }
-                else {
-                    String::new()
-                }
-            };
-        
-            let info = {
-                if let Some(entry) = entries.get("info") {
-                    TorrentInfo::new(entry)
-                }
-                else {
-                    panic!("Couldn't find info section")
-                }
-            };
-        
-            ParsedTorrent {
-                announce,
-                announce_list,
-                creation_date,
-        
-                info
+        let announce = {
+            if let Some(entry) = entries.get("announce") {
+                entry.as_string()
             }
-        }
-        else {
-            panic!("Malformed torrent file")
+            else {
+                String::new()
+            }
+        };
+        
+        let announce_list = {
+            if let Some(entry) = entries.get("announce-list") {
+                let list = entry.as_list();
+                list
+                    .iter()
+                    .map(| tracker_list | {
+                        tracker_list.as_list()[0].clone()
+                    })
+                    .map(| tracker | tracker.as_string())
+                    .collect()
+            }
+            else {
+                Vec::new()
+            }
+        };
+        
+        let info = {
+            if let Some(entry) = entries.get("info") {
+                TorrentInfo::new(entry)
+            }
+            else {
+                panic!("Couldn't find info section")
+            }
+        };
+        
+        ParsedTorrent {
+            announce,
+            announce_list,
+    
+            info
         }
     }
 
@@ -283,10 +282,6 @@ impl ParsedTorrent {
 
     pub fn announce_list(&self) -> &Vec<String> {
         &self.announce_list
-    }
-
-    pub fn creation_date(&self) -> &String {
-        &self.creation_date
     }
 
     pub fn info(&self) -> &TorrentInfo {
@@ -316,35 +311,35 @@ pub struct TorrentInfo {
 
 impl TorrentInfo {
     pub fn new(info: &BEncodeType) -> TorrentInfo {
-        let info_hash = info.get_dictionary_hash();
-        let info_hash_str = info.get_dictionary_hash_string();
+        let info_hash = info.as_dictionary_hash();
+        let info_hash_str = info.as_dictionary_hash_str();
 
-        let info = info.get_dictionary();
+        let info = info.as_dictionary();
 
         let length = {
             if let Some(length) = info.get("length") {
-                length.get_int() as u64
+                length.as_integer() as u64
             }
             else {
                 0
             }
         };
-        let name = info.get("name").unwrap().get_string();
-        let piece_length = info.get("piece length").unwrap().get_int() as u64;
+        let name = info.get("name").unwrap().as_string();
+        let piece_length = info.get("piece length").unwrap().as_integer() as u64;
 
         let files = {
             if let Some(files) = info.get("files") {
-                let file_list = files.get_list();
+                let file_list = files.as_list();
                 let mut files = Vec::new();
     
                 for entry in file_list {
-                    let file_info = entry.get_dictionary();
+                    let file_info = entry.as_dictionary();
                     
                     if let (Some(path), Some(length)) = (file_info.get("path"), file_info.get("length")) {
-                        let filename = path.get_list();
-                        let full_path = format!("{}/{}", &name, filename[0].get_string());
+                        let filename = path.as_list();
+                        let full_path = format!("{}/{}", &name, filename[0].as_string());
     
-                        files.push((full_path, length.get_int() as u64));
+                        files.push((full_path, length.as_integer() as u64));
                     }
                 }
     
@@ -356,7 +351,7 @@ impl TorrentInfo {
         };
 
         let pieces = {
-            let bytes = info.get("pieces").unwrap().get_string_bytes();
+            let bytes = info.get("pieces").unwrap().as_string_bytes();
             let chunks = bytes.chunks(20);
             let mut hashes = Vec::with_capacity(chunks.len());
 
@@ -418,7 +413,7 @@ impl TorrentInfo {
 mod tests {
     #[test]
     fn fedora_torrent() {
-        let file = std::fs::read("../torrents/Fedora-Workstation-Live-x86_64-37.torrent").expect("Failed to load torrent file");
+        let file = std::fs::read("./torrents/Fedora-Workstation-Live-x86_64-37.torrent").expect("Failed to load torrent file");
         let parsed = super::ParsedTorrent::new(file);
 
         assert_eq!(parsed.announce(), "http://torrent.fedoraproject.org:6969/announce");
@@ -434,7 +429,7 @@ mod tests {
 
     #[test]
     fn ubuntu_torrent() {
-        let file = std::fs::read("../torrents/ubuntu-22.10-desktop-amd64.iso.torrent").expect("Failed to load torrent file");
+        let file = std::fs::read("./torrents/ubuntu-22.10-desktop-amd64.iso.torrent").expect("Failed to load torrent file");
         let parsed = super::ParsedTorrent::new(file);
 
         assert_eq!(parsed.announce(), "https://torrent.ubuntu.com/announce");

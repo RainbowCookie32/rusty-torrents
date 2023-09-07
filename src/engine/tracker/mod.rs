@@ -177,11 +177,12 @@ impl TrackersHandler {
                 }
             };
     
-            let response_dictionary = BEncodeType::dictionary(&body_bytes, &mut 1);
-            let response_dictionary_hm = response_dictionary.get_dictionary();
+            let mut data_cursor = std::io::Cursor::new(body_bytes.as_ref());
+            let response_dictionary = BEncodeType::parse_type(&mut data_cursor);
+            let response_dictionary_hm = response_dictionary.as_dictionary();
     
             if let Some(peers_v4) = response_dictionary_hm.get("peers") {
-                let peers_bytes = peers_v4.get_string_bytes();
+                let peers_bytes = peers_v4.as_string_bytes();
                 let mut peers_slice = Bytes::from(peers_bytes);
 
                 while peers_slice.has_remaining() {
@@ -199,7 +200,7 @@ impl TrackersHandler {
             }
     
             if let Some(peers_v6) = response_dictionary_hm.get("peers6") {
-                let peers_bytes = peers_v6.get_string_bytes();
+                let peers_bytes = peers_v6.as_string_bytes();
                 let mut peers_slice = Bytes::from(peers_bytes);
 
                 while peers_slice.has_remaining() {
@@ -221,7 +222,7 @@ impl TrackersHandler {
             if let Some(interval) = response_dictionary_hm.get("interval") {
                 // Reannounce rates can be a bit on the high side, and sometimes we can end up with slow peers.
                 // Trackers *usually* don't seem to mind going below their specified rate, as long as they don't get spammed.
-                tracker.reannounce_rate = Some(Duration::from_secs((interval.get_int() as u64).min(120)));
+                tracker.reannounce_rate = Some(Duration::from_secs((interval.as_integer() as u64).min(120)));
             }
     
             if event == "completed" {
