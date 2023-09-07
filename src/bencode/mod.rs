@@ -2,7 +2,7 @@ use std::collections::HashMap;
 
 #[derive(Debug, Clone)]
 pub enum BEncodeType {
-    Int { value: u64 },
+    Int { value: i64 },
     String { value: String, bytes: Vec<u8> },
 
     List { entries: Vec<BEncodeType> },
@@ -138,12 +138,12 @@ impl BEncodeType {
         BEncodeType::Dictionary { entries, hash, hash_string }
     }
 
-    pub fn get_int(&self) -> u64 {
+    pub fn get_int(&self) -> i64 {
         if let BEncodeType::Int { value } = self {
             *value
         }
         else {
-            u64::MAX
+            i64::MAX
         }
     }
 
@@ -323,14 +323,14 @@ impl TorrentInfo {
 
         let length = {
             if let Some(length) = info.get("length") {
-                length.get_int()
+                length.get_int() as u64
             }
             else {
                 0
             }
         };
         let name = info.get("name").unwrap().get_string();
-        let piece_length = info.get("piece length").unwrap().get_int();
+        let piece_length = info.get("piece length").unwrap().get_int() as u64;
 
         let files = {
             if let Some(files) = info.get("files") {
@@ -344,7 +344,7 @@ impl TorrentInfo {
                         let filename = path.get_list();
                         let full_path = format!("{}/{}", &name, filename[0].get_string());
     
-                        files.push((full_path, length.get_int()));
+                        files.push((full_path, length.get_int() as u64));
                     }
                 }
     
