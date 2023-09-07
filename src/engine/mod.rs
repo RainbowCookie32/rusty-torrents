@@ -180,7 +180,7 @@ impl Engine {
         let progress_rx = self.transfer_progress_tx.subscribe();
 
         tokio::spawn(async move {
-            let trackers_handler = TrackersHandler::init(info_hash, progress, trackers, peers_tx, progress_rx);
+            let trackers_handler = TrackersHandler::init(info_hash, progress, trackers, peers_tx, progress_rx).await;
             trackers_handler.start().await;
         });
 
