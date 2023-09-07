@@ -31,6 +31,7 @@ struct PieceRequest {
 
     block_offset: u32,
     block_length: u32,
+    received_data: usize
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -328,6 +329,7 @@ impl TcpPeer {
 
                         block_offset,
                         block_length,
+                        received_data: 0
                     };
 
                     self.peer_request = Some(request);
@@ -336,12 +338,17 @@ impl TcpPeer {
                 self.peer_request_pending = true;
                 self.update_peer_status(PeerStatus::RequestedPiece(piece_idx));
             }
-            Message::Piece { piece_idx, mut block_data, .. } => {
+            Message::Piece { piece_idx, block_offset, block_data } => {
                 if let Some(piece) = self.client_request.as_mut() {
                     if piece_idx as usize == piece.idx {
-                        piece.data.append(&mut block_data);
+                        let block_offset = block_offset as usize;
+                        piece.received_data += block_data.len();
 
-                        if piece.data.len() == piece.size {
+                        for (i, byte) in block_data.into_iter().enumerate() {
+                            piece.data[block_offset + i] = byte;
+                        }
+
+                        if piece.received_data == piece.size {
                             println!("[{}]: completed piece {piece_idx}", self.address);
 
                             self.complete_piece_data_tx.send((piece.idx, piece.data.clone()))
@@ -349,6 +356,7 @@ impl TcpPeer {
                             ;
 
                             self.client_request = self.client_request_queue.pop();
+                            self.waiting_for_piece_data = false;
                         }
                     }
                     else {
@@ -362,8 +370,6 @@ impl TcpPeer {
                     println!("[{}]: peer sent a piece we didn't request", self.address);
                     return false;
                 }
-
-                self.waiting_for_piece_data = false;
             }
             Message::Cancel { .. } => {
                 self.client_request = None;
@@ -426,10 +432,11 @@ impl TcpPeer {
                             PieceRequest {
                                 idx: piece,
                                 size: length as usize,
-                                data: Vec::with_capacity(length as usize),
+                                data: vec![0; length as usize],
         
                                 block_offset: 0,
                                 block_length: 0,
+                                received_data: 0,
                             }
                         })
                         .collect::<Vec<PieceRequest>>()
@@ -439,6 +446,7 @@ impl TcpPeer {
                         self.client_request = pieces.pop();
                     }
 
+                    self.update_peer_status(PeerStatus::Busy);
                     self.client_request_queue.append(&mut pieces);
                 }
             }
@@ -543,23 +551,34 @@ impl TcpPeer {
     }
 
     async fn send_client_request(&mut self) -> bool {
-        let piece = self.client_request.as_ref().unwrap();
-
+        let mut messages = Vec::new();
+        let piece = self.client_request.as_mut().unwrap();
         let piece_idx = piece.idx as u32;
-        let block_offset = piece.data.len() as u32;
-        let block_length = (piece.size - piece.data.len()).min(16384) as u32;
-    
-        let message = Message::Request { piece_idx, block_offset, block_length };
-        self.update_peer_status(PeerStatus::Busy);
-    
-        if self.send_message(message).await {
-            self.waiting_for_piece_data = true;
-            true
+
+        loop {
+            let block_offset = piece.block_offset;
+            let pending_to_request = piece.size as u32 - block_offset;
+
+            if pending_to_request == 0 {
+                break;
+            }
+
+            let block_length = pending_to_request.min(16384) as u32;
+            let message = Message::Request { piece_idx, block_offset, block_length };
+
+            messages.push(message);
+            piece.block_offset += block_length;
         }
-        else {
-            println!("[{}]: failed to send request message to peer", self.address);
-            false
+
+        for message in messages {
+            if !self.send_message(message).await {
+                println!("[{}]: failed to send request message to peer", self.address);
+                return false;
+            }
         }
+
+        self.waiting_for_piece_data = true;
+        true
     }
 
     async fn send_peer_request(&mut self) -> bool {
