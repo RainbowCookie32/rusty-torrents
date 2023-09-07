@@ -313,7 +313,7 @@ impl Transfer {
                 .expect("Failed to extend file to size");
         }
 
-        (file, file_size)
+        (file, size)
     }
 
     async fn calculate_pieces_info(files: &[(File, u64)], piece_count: usize, piece_length: u64) -> Vec<TransferPiece> {
