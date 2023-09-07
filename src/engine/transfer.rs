@@ -8,7 +8,7 @@ use sha1_smol::Sha1;
 use tokio::fs;
 use tokio::fs::File;
 use tokio::fs::OpenOptions;
-use tokio::io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt};
+use tokio::io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt, BufWriter};
 
 use crate::bencode::ParsedTorrent;
 
@@ -27,7 +27,7 @@ pub struct Transfer {
     piece_length: u64,
 
     /// Handles for each file of the torrent.
-    files: Vec<(File, u64)>,
+    files: Vec<(BufWriter<File>, u64)>,
     
     left: u64,
     total_size: u64,
@@ -50,6 +50,9 @@ impl Transfer {
         let mut should_check_pieces = false;
         let mut files = Vec::with_capacity(torrent_data.get_files().len());
 
+        // Buffer size of 10 pieces. Arbitrary choice, no science behind it.
+        let buf_size = (piece_length * 10) as usize;
+
         for (filename, size) in torrent_data.get_files() {
             let mut file_path = output_path.to_path_buf();
             file_path.push(filename);
@@ -59,7 +62,7 @@ impl Transfer {
                 should_check_pieces = true;
             }
 
-            files.push(Transfer::create_file(&file_path, *size).await);
+            files.push(Transfer::create_file(&file_path, *size, buf_size).await);
         }
 
         let pieces = Transfer::calculate_pieces_info(&files, piece_count, piece_length).await;
@@ -301,7 +304,7 @@ impl Transfer {
         }
     }
 
-    async fn create_file(path: &Path, size: u64) -> (File, u64) {
+    async fn create_file(path: &Path, size: u64, buf_size: usize) -> (BufWriter<File>, u64) {
         fs::create_dir_all(path.parent().unwrap()).await
             .expect("Failed to create download dir")
         ;
@@ -329,10 +332,10 @@ impl Transfer {
                 .expect("Failed to extend file to size");
         }
 
-        (file, size)
+        (BufWriter::with_capacity(buf_size, file), size)
     }
 
-    async fn calculate_pieces_info(files: &[(File, u64)], piece_count: usize, piece_length: u64) -> Vec<TransferPiece> {
+    async fn calculate_pieces_info(files: &[(BufWriter<File>, u64)], piece_count: usize, piece_length: u64) -> Vec<TransferPiece> {
         let mut pieces_info = Vec::with_capacity(piece_count);
 
         let mut file_idx = 0;
