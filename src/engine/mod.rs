@@ -59,7 +59,10 @@ impl Engine {
 
     pub async fn start_torrent(&mut self) {
         let mut complete = false;
-        self.transfer.check_torrent().await;
+        
+        if self.transfer.should_check_pieces() {
+            self.transfer.check_torrent().await;
+        }
         
         let mut peers_rx = self.start_trackers_task().await;
 

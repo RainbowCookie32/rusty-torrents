@@ -33,6 +33,8 @@ pub struct Transfer {
     total_size: u64,
     total_uploaded: u64,
     total_downloaded: u64,
+
+    should_check_pieces: bool,
 }
 
 impl Transfer {
@@ -43,11 +45,19 @@ impl Transfer {
         let piece_count = torrent_data.info().pieces().len();
         let piece_length = torrent_data.info().piece_length();
 
+        // If we are just starting the torrent there's no use checking the pieces.
+        // They will all be incomplete.
+        let mut should_check_pieces = false;
         let mut files = Vec::with_capacity(torrent_data.get_files().len());
 
         for (filename, size) in torrent_data.get_files() {
             let mut file_path = output_path.to_path_buf();
             file_path.push(filename);
+
+            // If even one file already exists, we need to check the pieces.
+            if !should_check_pieces && file_path.exists() {
+                should_check_pieces = true;
+            }
 
             files.push(Transfer::create_file(&file_path, *size).await);
         }
@@ -75,6 +85,8 @@ impl Transfer {
             total_size,
             total_uploaded: 0,
             total_downloaded: 0,
+
+            should_check_pieces
         }
     }
 
@@ -91,6 +103,10 @@ impl Transfer {
             .iter()
             .map(| piece | piece.completed)
             .collect()
+    }
+
+    pub fn should_check_pieces(&self) -> bool {
+        self.should_check_pieces
     }
 
     pub fn get_piece_for_peer(&mut self, available_pieces: &Vec<bool>) -> Option<&mut TransferPiece> {
