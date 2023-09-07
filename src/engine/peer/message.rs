@@ -6,6 +6,8 @@ use crate::engine::peer::Bitfield;
 
 #[derive(Clone)]
 pub enum Message {
+    Unknown(u8),
+
     KeepAlive,
 
     Choke,
@@ -58,7 +60,9 @@ impl From<Bytes> for Message {
 
                 Message::Cancel { piece_idx, block_offset, block_length }
             }
-            _ => unreachable!()
+            _ => {
+                Message::Unknown(msg_kind)
+            }
         }
     }
 }
@@ -66,6 +70,7 @@ impl From<Bytes> for Message {
 impl From<Message> for Bytes {
     fn from(msg: Message) -> Bytes {
         match msg {
+            Message::Unknown(_) => unreachable!(),
             Message::KeepAlive => Bytes::from(vec![0, 0, 0, 0, 0]),
             Message::Choke => Bytes::from(vec![0, 0, 0, 1, 0]),
             Message::Unchoke => Bytes::from(vec![0, 0, 0, 1, 1]),
@@ -134,6 +139,7 @@ impl From<Message> for Bytes {
 impl Display for Message {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
+            Message::Unknown(id) =>  write!(f, "Unknown message ({id})"),
             Message::KeepAlive => write!(f, "Keep Alive"),
             Message::Choke => write!(f, "Choke"),
             Message::Unchoke => write!(f, "Unchoke"),

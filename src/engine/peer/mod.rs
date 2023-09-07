@@ -112,6 +112,8 @@ pub struct TcpPeer {
     waiting_for_message: bool,
     /// true if we are waiting for a piece message specifically.
     waiting_for_piece_data: bool,
+
+    unknown_messages_received: u8,
 }
 
 impl TcpPeer {
@@ -160,6 +162,8 @@ impl TcpPeer {
     
                 waiting_for_message: false,
                 waiting_for_piece_data: false,
+
+                unknown_messages_received: 0,
             }
         )
     }
@@ -363,6 +367,15 @@ impl TcpPeer {
             }
             Message::Cancel { .. } => {
                 self.client_request = None;
+            }
+            Message::Unknown(id) => {
+                println!("[{}]: peer sent an unknown message id ({id})", self.address);
+                self.unknown_messages_received += 1;
+
+                if self.unknown_messages_received >= 5 {
+                    println!("[{}]: peer sent too many unknown messages, dropping it.", self.address);
+                    return false;
+                }
             }
         }
 
